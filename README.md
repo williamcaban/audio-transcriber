@@ -14,7 +14,7 @@ transcription becomes a real need, this would need a second model wired in
 
 ## Requirements
 
-- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) (manages the Python 3.13 install and the venv — no need to have 3.13 on PATH yourself)
 - `ffmpeg` and `ffprobe` on PATH (audio/video extraction)
 - A CUDA GPU is strongly recommended. It will run on CPU, but slowly, and
   long files may be impractical.
@@ -24,25 +24,27 @@ rather than the NeMo toolkit, specifically because NeMo's dependency chain
 (pytorch-lightning, lhotse, megatron-core, ...) lags new Python releases by
 months and this project targets 3.13+. The tradeoff: Parakeet TDT support in
 `transformers` is very recent and not yet in a stable release, so
-`requirements.txt` installs it straight from the GitHub `main` branch — pin
-it to a commit SHA (see the comment in that file) once you've confirmed a
+`pyproject.toml` installs it straight from the GitHub `main` branch — pin it
+to a commit SHA (see the comment in that file) once you've confirmed a
 version that works for you.
 
 ## Setup
 
 ```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
-
-# Install a torch build matching your CUDA version first if the default
-# wheel isn't right for your GPU: https://pytorch.org/get-started/locally/
-pip install -r requirements.txt
+uv sync
 ```
+
+This creates `.venv` with Python 3.13 (fetched automatically by uv if not
+already installed) and installs everything from `uv.lock`. If you need a
+specific CUDA build of torch, install it first with
+`uv pip install torch --index-url <your CUDA index>` before `uv sync`, or
+add an explicit `[tool.uv.sources]` entry for `torch` in `pyproject.toml`
+(see https://docs.astral.sh/uv/guides/integration/pytorch/).
 
 ## Run
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then open http://localhost:8000 (or `http://<host>:8000` if running on a
