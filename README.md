@@ -2,7 +2,7 @@
 
 Small FastAPI app that transcribes audio and video files to Markdown using
 NVIDIA's [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
-model (NeMo toolkit).
+model, via its `transformers`-native port (`AutoModelForTDT`).
 
 ## Language coverage
 
@@ -14,15 +14,24 @@ transcription becomes a real need, this would need a second model wired in
 
 ## Requirements
 
-- Python 3.10 or 3.11 (NeMo's dependency chain is not yet reliable on 3.12+)
+- Python 3.13+
 - `ffmpeg` and `ffprobe` on PATH (audio/video extraction)
 - A CUDA GPU is strongly recommended. It will run on CPU, but slowly, and
   long files may be impractical.
 
+Uses the `transformers`-native path (`AutoModelForTDT`/`AutoProcessor`)
+rather than the NeMo toolkit, specifically because NeMo's dependency chain
+(pytorch-lightning, lhotse, megatron-core, ...) lags new Python releases by
+months and this project targets 3.13+. The tradeoff: Parakeet TDT support in
+`transformers` is very recent and not yet in a stable release, so
+`requirements.txt` installs it straight from the GitHub `main` branch — pin
+it to a commit SHA (see the comment in that file) once you've confirmed a
+version that works for you.
+
 ## Setup
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 
 # Install a torch build matching your CUDA version first if the default
@@ -44,12 +53,14 @@ first startup (a few GB) and is cached by `huggingface_hub` after that.
 
 1. Upload -> saved to `data/<job_id>/source.*`
 2. `ffmpeg` extracts a 16kHz mono wav
-3. NeMo's `ASRModel.transcribe(..., timestamps=True)` runs inference;
-   files longer than 10 minutes automatically switch the encoder to local
-   attention (lower memory, slight quality tradeoff) per the model card's
-   long-audio guidance
-4. Segments are rendered into a timestamped Markdown transcript, served back
-   to the browser and available as a `.md` download
+3. The wav is read into a float32 array and split into fixed 10-minute
+   chunks (no overlap — a word occasionally split at a boundary is an
+   accepted tradeoff for keeping this simple); each chunk goes through
+   `model.generate()` and `processor.decode(..., durations=...)`
+4. Per-token/word timestamps are grouped into readable lines (new line every
+   ~15s or at sentence-ending punctuation) and rendered into a timestamped
+   Markdown transcript, served back to the browser and available as a `.md`
+   download
 
 Jobs are tracked in memory only (`app/jobs.py`) — this is a personal
 single-user tool, not a multi-tenant service. Restarting the server drops
@@ -57,6 +68,12 @@ any in-flight job.
 
 ## Known limitations / next steps
 
+- The transformers port of Parakeet TDT is pre-release; the exact shape of
+  the per-token timestamp output isn't pinned down by stable docs, so
+  `transcriber._entries_to_segments` is deliberately defensive and falls
+  back to one untimed block of text per chunk if parsing fails. If that
+  fallback is firing in practice, re-check the model card for the current
+  output format and tighten the parser.
 - No persistent job history — add a DB if you want transcripts to survive restarts.
 - Single model instance processes one job at a time (background tasks run
   sequentially against the one loaded model); fine for personal use, not for
@@ -64,3 +81,5 @@ any in-flight job.
 - No forced language hint — the model auto-detects; if it ever picks the
   wrong language for a mixed-language file, a manual override param would be
   the fix.
+- Long files are chunked at fixed 10-minute boundaries with no overlap, so a
+  word spanning a boundary can be slightly garbled. Not addressed in v1.

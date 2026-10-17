@@ -1,8 +1,15 @@
 """Parakeet TDT 0.6B v3 wrapper: load once, transcribe a wav into timestamped segments.
 
-Uses the NeMo toolkit (not the transformers path) because NeMo exposes
-segment-level timestamps and a documented long-audio mode out of the box,
-both of which the Markdown output below depends on.
+Uses the `transformers`-native port (`AutoModelForTDT`/`AutoProcessor`)
+rather than the NeMo toolkit. NeMo's own dependency chain (pytorch-lightning,
+lhotse, megatron-core, ...) lags new Python releases by months; transformers
+tracks them fast, which matters here since the project targets Python 3.13+.
+
+Tradeoff: Parakeet TDT support landed in transformers very recently and
+isn't in a stable release yet (see README for the `pip install` from
+source), and the long-audio "local attention" trick NeMo exposes isn't part
+of this API. Long files are handled here instead by chunking the raw audio
+ourselves before inference (see `CHUNK_SECONDS`).
 """
 
 import logging
@@ -11,21 +18,23 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+import numpy as np
+import soundfile as sf
 import torch
 
 logger = logging.getLogger("transcriber.model")
 
 MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
 
-# Model card: up to ~24 min with full attention on an A100-80GB. Smaller GPUs
-# need local attention sooner, so default conservatively; override via env
-# if you know your GPU handles longer full-attention passes.
-LONG_AUDIO_SECONDS = 600
-LOCAL_ATTENTION_CONTEXT = (256, 256)
+# Conservative default so it behaves on modest GPUs too; override if you know
+# your hardware handles longer passes. No overlap between chunks: a word
+# occasionally split at a chunk boundary is an accepted tradeoff for keeping
+# this simple.
+CHUNK_SECONDS = 600
 
 _model = None
+_processor = None
 _model_lock = threading.Lock()
-_local_attention_active = False
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -37,10 +46,10 @@ class Segment:
 
 
 def load_model():
-    global _model
+    global _model, _processor
     with _model_lock:
         if _model is None:
-            import nemo.collections.asr as nemo_asr
+            from transformers import AutoModelForTDT, AutoProcessor
 
             logger.info("Loading %s on %s ...", MODEL_NAME, _device)
             if _device == "cpu":
@@ -48,44 +57,123 @@ def load_model():
                     "No CUDA GPU detected. Parakeet will run on CPU: expect it to be "
                     "much slower than real-time, and long files may be impractical."
                 )
-            model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME)
-            model = model.to(_device)
-            model.eval()
-            _model = model
+            _processor = AutoProcessor.from_pretrained(MODEL_NAME)
+            _model = AutoModelForTDT.from_pretrained(MODEL_NAME, dtype="auto", device_map=_device)
+            _model.eval()
             logger.info("Model loaded.")
-    return _model
+    return _model, _processor
 
 
-def _enable_long_audio_mode():
-    global _local_attention_active
-    if not _local_attention_active:
-        logger.info("Long audio detected: switching encoder to local attention")
-        _model.encoder.set_attention_model("rel_pos_local_attn", LOCAL_ATTENTION_CONTEXT)
-        _local_attention_active = True
+def _read_mono_audio(wav_path: str, target_sample_rate: int) -> np.ndarray:
+    audio, sample_rate = sf.read(wav_path, dtype="float32", always_2d=False)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sample_rate != target_sample_rate:
+        # media.extract_audio already resamples to 16kHz; this only fires if
+        # that contract is ever violated, so fail loudly instead of silently
+        # mis-transcribing.
+        raise ValueError(f"expected {target_sample_rate}Hz audio, got {sample_rate}Hz")
+    return audio
+
+
+def _chunk_audio(audio: np.ndarray, sample_rate: int, chunk_seconds: int):
+    chunk_len = chunk_seconds * sample_rate
+    for start_sample in range(0, len(audio), chunk_len):
+        start_time = start_sample / sample_rate
+        yield start_time, audio[start_sample : start_sample + chunk_len]
+
+
+def _transcribe_chunk(model, processor, audio_chunk: np.ndarray, sample_rate: int) -> tuple[str, list]:
+    inputs = processor(audio=[audio_chunk], sampling_rate=sample_rate)
+    inputs.to(model.device, dtype=model.dtype)
+
+    with torch.inference_mode():
+        output = model.generate(**inputs, return_dict_in_generate=True)
+
+    text, timestamps = processor.decode(
+        output.sequences,
+        durations=output.durations,
+        skip_special_tokens=True,
+    )
+    text = text[0] if isinstance(text, list) else text
+    entries = timestamps[0] if timestamps and isinstance(timestamps, list) else (timestamps or [])
+    return text, entries
+
+
+def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> list[Segment]:
+    """Group per-token/word timestamp entries into readable lines.
+
+    The exact shape of `entries` isn't pinned down by stable docs yet (this
+    API is pre-release) so this is deliberately defensive: any entry that
+    doesn't look like {start, end/duration, text} just gets skipped, and if
+    nothing usable comes out of it at all, the caller falls back to one
+    block of plain text for the chunk.
+    """
+    segments: list[Segment] = []
+    words: list[str] = []
+    seg_start: Optional[float] = None
+    last_end = chunk_start
+
+    def flush():
+        if words:
+            segments.append(Segment(start=seg_start, end=last_end, text=" ".join(words).strip()))
+            words.clear()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("token") or entry.get("word") or entry.get("text")
+        start = entry.get("start", entry.get("start_time"))
+        end = entry.get("end", entry.get("end_time"))
+        if token is None or start is None:
+            continue
+        start = chunk_start + float(start)
+        end = chunk_start + float(end) if end is not None else start
+
+        if seg_start is None:
+            seg_start = start
+        words.append(str(token))
+        last_end = end
+
+        is_long_enough = (last_end - seg_start) >= 15
+        ends_sentence = str(token).strip().endswith((".", "?", "!"))
+        if is_long_enough or ends_sentence:
+            flush()
+            seg_start = None
+
+    flush()
+    return segments
 
 
 def transcribe(wav_path: str, duration_seconds: float) -> tuple[list[Segment], Optional[str]]:
-    model = load_model()
+    model, processor = load_model()
+    sample_rate = processor.feature_extractor.sampling_rate
 
-    if duration_seconds > LONG_AUDIO_SECONDS:
-        _enable_long_audio_mode()
+    audio = _read_mono_audio(wav_path, sample_rate)
 
-    with torch.inference_mode():
-        output = model.transcribe([wav_path], timestamps=True)
+    all_segments: list[Segment] = []
+    for chunk_start, audio_chunk in _chunk_audio(audio, sample_rate, CHUNK_SECONDS):
+        if len(audio_chunk) == 0:
+            continue
+        text, entries = _transcribe_chunk(model, processor, audio_chunk, sample_rate)
 
-    hypothesis = output[0]
-    detected_language = getattr(hypothesis, "lang", None)
+        segments = []
+        try:
+            segments = _entries_to_segments(entries, chunk_start, text)
+        except Exception:  # noqa: BLE001 - timestamp parsing is best-effort
+            logger.warning("Could not parse per-token timestamps for this chunk; using plain text", exc_info=True)
 
-    segments: list[Segment] = []
-    timestamp_data = getattr(hypothesis, "timestamp", None) or {}
-    for item in timestamp_data.get("segment", []):
-        segments.append(Segment(start=item["start"], end=item["end"], text=item["segment"].strip()))
+        if not segments and text.strip():
+            chunk_end = chunk_start + len(audio_chunk) / sample_rate
+            segments = [Segment(start=chunk_start, end=chunk_end, text=text.strip())]
 
-    if not segments:
-        # Fallback for model/version combos that don't return segment stamps.
-        segments.append(Segment(start=0.0, end=duration_seconds, text=hypothesis.text.strip()))
+        all_segments.extend(segments)
 
-    return segments, detected_language
+    # This transformers-native path doesn't expose a detected-language field
+    # the way the NeMo API did; leave room for it without inventing a value.
+    detected_language = None
+
+    return all_segments, detected_language
 
 
 def _format_timestamp(seconds: float) -> str:
