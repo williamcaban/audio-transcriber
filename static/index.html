@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio Transcriber</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { background: #0b0f14; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100 font-sans">
+  <div class="max-w-3xl mx-auto px-4 py-10">
+    <header class="mb-8">
+      <h1 class="text-2xl font-semibold tracking-tight">Audio Transcriber</h1>
+      <p class="text-slate-400 text-sm mt-1">
+        Spanish &amp; English (Parakeet TDT 0.6B v3) &middot; drop an audio or video file to transcribe it to Markdown.
+      </p>
+    </header>
+
+    <section>
+      <label id="dropzone"
+        class="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-700 rounded-xl py-14 cursor-pointer transition-colors hover:border-indigo-500 hover:bg-slate-900/40">
+        <span class="text-slate-300">Drag a file here, or click to choose one</span>
+        <span class="text-xs text-slate-500">mp3, wav, m4a, mp4, mov, mkv, ...</span>
+        <input id="file-input" type="file" accept="audio/*,video/*" class="hidden" />
+      </label>
+    </section>
+
+    <section id="status-section" class="mt-6 hidden">
+      <div class="flex items-center gap-3 text-sm text-slate-300">
+        <svg id="spinner" class="animate-spin h-4 w-4 text-indigo-400" viewBox="0 0 24 24" fill="none">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+        </svg>
+        <span id="status-text">Uploading...</span>
+      </div>
+    </section>
+
+    <section id="error-section" class="mt-6 hidden">
+      <p class="text-sm text-red-400" id="error-text"></p>
+    </section>
+
+    <section id="result-section" class="mt-8 hidden">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-medium text-slate-300">Transcript</h2>
+        <div class="flex gap-3">
+          <a id="download-link" class="text-sm text-indigo-400 hover:text-indigo-300" href="#" download>Download .md</a>
+          <button id="new-button" class="text-sm text-slate-400 hover:text-slate-200">Transcribe another</button>
+        </div>
+      </div>
+      <article id="markdown-output"
+        class="prose prose-invert prose-sm max-w-none bg-slate-900/60 border border-slate-800 rounded-xl p-5"></article>
+    </section>
+  </div>
+
+  <script>
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file-input");
+    const statusSection = document.getElementById("status-section");
+    const statusText = document.getElementById("status-text");
+    const errorSection = document.getElementById("error-section");
+    const errorText = document.getElementById("error-text");
+    const resultSection = document.getElementById("result-section");
+    const markdownOutput = document.getElementById("markdown-output");
+    const downloadLink = document.getElementById("download-link");
+    const newButton = document.getElementById("new-button");
+
+    const STATUS_LABELS = {
+      queued: "Queued...",
+      extracting_audio: "Extracting audio...",
+      transcribing: "Transcribing (this can take a while for long files)...",
+      done: "Done",
+      error: "Failed",
+    };
+
+    function resetUI() {
+      statusSection.classList.add("hidden");
+      errorSection.classList.add("hidden");
+      resultSection.classList.add("hidden");
+      fileInput.value = "";
+    }
+
+    function showError(message) {
+      statusSection.classList.add("hidden");
+      errorSection.classList.remove("hidden");
+      errorText.textContent = message;
+    }
+
+    async function pollJob(jobId) {
+      const resp = await fetch(`/api/jobs/${jobId}`);
+      if (!resp.ok) {
+        showError("Lost track of this job.");
+        return;
+      }
+      const job = await resp.json();
+
+      if (job.status === "error") {
+        showError(job.error || "Transcription failed.");
+        return;
+      }
+
+      statusText.textContent = STATUS_LABELS[job.status] || job.status;
+
+      if (job.status === "done") {
+        const mdResp = await fetch(`/api/jobs/${jobId}/markdown`);
+        const { markdown } = await mdResp.json();
+        markdownOutput.innerHTML = marked.parse(markdown);
+        downloadLink.href = `/api/jobs/${jobId}/download`;
+        statusSection.classList.add("hidden");
+        resultSection.classList.remove("hidden");
+        return;
+      }
+
+      setTimeout(() => pollJob(jobId), 2000);
+    }
+
+    async function uploadFile(file) {
+      resetUI();
+      statusSection.classList.remove("hidden");
+      statusText.textContent = "Uploading...";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const resp = await fetch("/api/jobs", { method: "POST", body: formData });
+        if (!resp.ok) {
+          showError("Upload failed.");
+          return;
+        }
+        const { job_id } = await resp.json();
+        pollJob(job_id);
+      } catch (err) {
+        showError(String(err));
+      }
+    }
+
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("border-indigo-500");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("border-indigo-500"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("border-indigo-500");
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length) uploadFile(fileInput.files[0]);
+    });
+
+    newButton.addEventListener("click", resetUI);
+  </script>
+</body>
+</html>
