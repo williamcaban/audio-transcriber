@@ -1,0 +1,9 @@
+.git/
+.venv/
+data/
+__pycache__/
+*.pyc
+*.wav
+*.mp3
+*.mp4
+README.md

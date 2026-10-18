@@ -51,6 +51,45 @@ Then open http://localhost:8000 (or `http://<host>:8000` if running on a
 remote GPU box) and drop in a file. The model downloads from Hugging Face on
 first startup (a few GB) and is cached by `huggingface_hub` after that.
 
+## Running in a container
+
+`Containerfile` builds on Fedora's official Python 3.14 application image
+([quay.io/fedora/python-314](https://quay.io/repository/fedora/python-314))
+plus `ffmpeg-free`. It installs dependencies with the base image's
+preinstalled `pip`, from `requirements.txt` — a pinned export of `uv.lock`
+so the container gets the exact versions you tested with locally under uv.
+Regenerate it whenever `pyproject.toml`/`uv.lock` change:
+
+```bash
+uv export --no-hashes --no-dev --no-emit-project -o requirements.txt
+```
+
+```bash
+podman build -t audio-transcriber:latest -f Containerfile .
+
+# CPU-only run
+podman run --rm -p 8080:8080 \
+  -v audio-transcriber-model-cache:/opt/app-root/src/.cache/huggingface:Z \
+  audio-transcriber:latest
+
+# With an NVIDIA GPU passed through (requires the NVIDIA Container Toolkit's
+# CDI setup: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html)
+podman run --rm -p 8080:8080 --device nvidia.com/gpu=all \
+  -v audio-transcriber-model-cache:/opt/app-root/src/.cache/huggingface:Z \
+  audio-transcriber:latest
+```
+
+Then open http://localhost:8080. The named volume keeps the downloaded model
+weights (a few GB) across container restarts/recreations — without it,
+every fresh container re-downloads from Hugging Face on first request.
+
+The base image is the SCLorg/OpenShift S2I Python image (runs as uid 1001,
+`WORKDIR /opt/app-root/src`), so this also deploys cleanly on OpenShift with
+its arbitrary-UID security model; swap the `FROM` line for
+`quay.io/fedora/python-313` if you'd rather track 3.13 instead (local dev
+via `uv` still targets 3.13 — see `.python-version` — `pyproject.toml` only
+requires `>=3.13`, so either image works).
+
 ## How it works
 
 1. Upload -> saved to `data/<job_id>/source.*`
