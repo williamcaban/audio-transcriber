@@ -49,9 +49,22 @@ debugging a specific run -- see `.github/workflows/ci.yml`'s `macos-build`
 job -- but Releases above are the actual place to get a copy from.)
 
 **It's unsigned**, so macOS Gatekeeper will refuse to open it normally
-("Audio Transcriber.app is damaged and can't be opened" or similar). Either
-right-click -> Open (and confirm) the first time instead of double-clicking,
-or clear the quarantine attribute a browser download adds:
+("Audio Transcriber.app is damaged and can't be opened" or similar).
+No Terminal needed -- two GUI ways to allow it, in order of what to try
+first:
+
+1. In Finder, **Control-click** (or right-click) `Audio Transcriber.app` --
+   not a regular double-click -- and choose **Open** from the menu. The
+   dialog that appears still warns about an unverified developer, but this
+   time it has an **Open** button; click it. macOS remembers this choice
+   for future double-clicks.
+2. If you already double-clicked first and got a dead-end dialog with no
+   Open option: **System Settings -> Privacy & Security**, scroll down to
+   the line saying `"Audio Transcriber.app" was blocked`, click **Open
+   Anyway**, confirm (Touch ID/password if asked), then open the app again.
+
+Terminal alternative, if you prefer it: clear the quarantine attribute a
+browser download adds, then open normally.
 
 ```bash
 xattr -cr "Audio Transcriber.app"
