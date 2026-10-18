@@ -65,14 +65,30 @@ This should produce `macos/dist/Audio Transcriber.app`. Progress so far
   script's own directory -- following "run from the repo root" (as these
   instructions say) meant it looked for `desktop_app.py` at the repo root
   and failed. `setup.py` now `chdir`s to its own directory first.
-- **Known, unresolved**: past those fixes, py2app's module-dependency
-  scanner (`modulegraph`, AST-based) hit a `RecursionError` while walking
-  this project's dependency tree -- almost certainly `torch`/`transformers`,
-  whose generated/huge modules are a known pain point for py2app and
-  PyInstaller alike. Not yet fixed. If you hit this, a next step worth
-  trying is raising `sys.setrecursionlimit()` in `setup.py` before calling
-  `setup()`, or excluding specific heavy submodules py2app doesn't need to
-  trace fully.
+- **Fixed**: confirmed on both Linux and real macOS -- py2app's
+  module-dependency scanner (`modulegraph`, AST-based) hit a `RecursionError`
+  walking this project's dependency tree, almost certainly `torch`/
+  `transformers`' generated/huge modules (a known pain point for py2app and
+  PyInstaller alike with large ML libraries). Fixed with
+  `sys.setrecursionlimit(10000)` in `setup.py` before `setup()` runs --
+  confirmed the scan then completes.
+- **Fixed**: past the recursion fix, the build failed with `AttributeError:
+  module 'zlib' has no attribute '__file__'`. py2app unconditionally does
+  `import zlib; copy_file(zlib.__file__, ...)` while building the
+  executable, assuming zlib is always a separate loadable extension file.
+  uv-managed Python builds (python-build-standalone) statically link zlib
+  into the interpreter for portability, so it has no `__file__`. Fixed by
+  pointing `zlib.__file__` at the system's real zlib shared library
+  (`ctypes.util.find_library("z")`) when it's missing -- harmless, since
+  it's the same code, just not compiled into this interpreter as a
+  standalone file.
+- **Status after these fixes**: not yet confirmed to produce a working
+  `.app` end to end -- py2app's static analysis of a `torch`/`transformers`
+  dependency tree is known to be slow (a Linux-side verification run of the
+  same fix ran 30+ minutes without finishing, almost certainly just slow
+  rather than stuck, but wasn't worth waiting out on a platform that can't
+  produce a real macOS bundle anyway). Try the actual build on macOS and
+  give it time; report back whatever it does, success or a new error.
 
 If you'd rather skip py2app entirely, a zero-code alternative for a
 native-feeling window is Chrome/Safari's app mode pointed at a server you
