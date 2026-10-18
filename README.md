@@ -101,6 +101,11 @@ xattr -cr "Audio Transcriber.app"   # it's unsigned -- clears the quarantine fla
 open "Audio Transcriber.app"
 ```
 
+Prefer not to use Terminal? Unzip in Finder, then see
+[`macos/README.md`](macos/README.md) for the GUI-only way to get an
+unsigned app past Gatekeeper (Control-click -> Open, or System Settings ->
+Privacy & Security -> Open Anyway).
+
 To build it yourself instead of downloading:
 
 ```bash
