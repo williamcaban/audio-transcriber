@@ -265,6 +265,15 @@ spacing bug that garbled every word, a mis-nested processor kwarg) only
 showed up once a model actually loaded and ran; a mocked test would have
 passed right through all of them.
 
-CI (`.github/workflows/ci.yml`) runs both lint and the test suite on every
-push to `main` and every PR. GitHub Actions are pinned to commit SHAs, not
-mutable tags.
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every PR.
+GitHub Actions are pinned to commit SHAs, not mutable tags.
+
+- `lint` and `test` run on every PR and push, for fast iteration feedback.
+- `container-build` (builds `Containerfile`, smoke-checks the image imports)
+  and `macos-build` (builds the `.app` bundle on a real `macos-latest`
+  runner via `macos/setup.py py2app`) only run on push to `main` or manual
+  dispatch, not every PR -- the macOS build in particular has taken 30+
+  minutes in testing, and paying that on every PR push would badly slow
+  down normal iteration. These catch packaging regressions in the actual
+  deployable artifacts shortly after merge, giving consistent automated
+  feedback instead of relying on an ad hoc local build.
