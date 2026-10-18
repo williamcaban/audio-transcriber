@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -38,3 +39,33 @@ jobs:
           path: ~/.cache/huggingface
           key: hf-models-v1
       - run: uv run pytest -v
+
+  # These two are the actual deployable artifacts, not just "does the Python
+  # import graph work" -- only run post-merge (push to main), not on every
+  # PR: the macOS build in particular has taken 30+ minutes in testing, and
+  # paying that on every PR push would badly slow down normal iteration.
+  # lint+test above still run on every PR for fast feedback; these catch
+  # packaging regressions shortly after merge instead.
+  container-build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker build -t audio-transcriber:ci -f Containerfile .
+      - name: Smoke-check the built image actually imports
+        run: docker run --rm audio-transcriber:ci python -c "import app.main; print('import OK')"
+
+  macos-build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --extra desktop
+      - run: uv run python macos/setup.py py2app
+      - name: Verify the .app bundle was produced
+        run: test -d "macos/dist/Audio Transcriber.app"
