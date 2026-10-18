@@ -1,5 +1,9 @@
 # Audio Transcriber
 
+[![CI](https://github.com/williamcaban/audio-transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/williamcaban/audio-transcriber/actions/workflows/ci.yml)
+[![Release](https://github.com/williamcaban/audio-transcriber/actions/workflows/release.yml/badge.svg)](https://github.com/williamcaban/audio-transcriber/actions/workflows/release.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 Small FastAPI app that transcribes audio and video files to Markdown or
 Word, with a choice of two ASR backends (`app/asr/`):
 
@@ -63,11 +67,8 @@ first startup (a few GB) and is cached by `huggingface_hub` after that.
 
 ## Running on macOS
 
-Two options to run the web app; native is recommended on Apple Silicon
-since it can use the GPU via Metal (MPS), which a container can't reach.
-For an actual native window instead of a browser tab, see
-[`macos/README.md`](macos/README.md) -- a thin wrapper that reuses this
-same server and UI, confirmed working on real macOS.
+Three options: run the web app natively, run it in a container, or build/
+download an actual native window instead of a browser tab.
 
 ### Native (recommended on Apple Silicon)
 
@@ -86,6 +87,34 @@ ports are very new, so MPS op coverage isn't guaranteed — if
 `detect_device()` to always return `"cpu"` (slower, but guaranteed to
 work), or set `PYTORCH_ENABLE_MPS_FALLBACK=1` to let unsupported ops
 silently fall back to CPU per-op.
+
+### Native window (a real `.app`, not a browser tab)
+
+Confirmed working, both built locally and via CI on a real `macos-latest`
+runner. Quickest way to try it without building anything:
+
+```bash
+# download Audio-Transcriber-macOS.zip from
+# https://github.com/williamcaban/audio-transcriber/releases, then:
+unzip Audio-Transcriber-macOS.zip
+xattr -cr "Audio Transcriber.app"   # it's unsigned -- clears the quarantine flag
+open "Audio Transcriber.app"
+```
+
+To build it yourself instead of downloading:
+
+```bash
+uv run --extra desktop python macos/setup.py py2app
+```
+
+Produces `macos/dist/Audio Transcriber.app`. See
+[`macos/README.md`](macos/README.md) for the full build-from-source story
+(including the real bugs hit and fixed along the way) and
+[Releases and dev builds](#releases-and-dev-builds) below for where
+pre-built copies come from. There's also a non-bundled way to get a native
+window, useful while developing: `uv run --extra desktop python
+macos/desktop_app.py` runs the server in-process and opens it in a
+pywebview window directly, no packaging step.
 
 ### Container (Podman Desktop)
 
@@ -150,63 +179,32 @@ its arbitrary-UID security model; swap the `FROM` line for
 via `uv` still targets 3.13 — see `.python-version` — `pyproject.toml` only
 requires `>=3.13`, so either image works).
 
+## Releases and dev builds
+
+`.github/workflows/release.yml` builds and publishes both deployable
+artifacts automatically -- no need to build either yourself unless you want
+to:
+
+- **Version tags** (`v0.1.0`, ...) publish a permanent
+  [GitHub Release](https://github.com/williamcaban/audio-transcriber/releases)
+  with `Audio-Transcriber-macOS.zip` attached, and push the container image
+  as `ghcr.io/williamcaban/audio-transcriber:<tag>` plus `:latest`.
+- **Every push to `main`** overwrites a single rolling
+  [`dev` pre-release](https://github.com/williamcaban/audio-transcriber/releases/tag/dev)
+  (same zipped `.app`) and the `:dev` container tag, with whatever's
+  currently on `main` -- not a stable release, just the latest build without
+  waiting for a version tag.
+
+Both jobs run on a real target runner (`ubuntu-latest` for the container,
+`macos-latest` for the `.app`), so a green badge above means the actual
+artifacts build, not just that the Python import graph works.
+
 ## How it works
 
-1. Pick a model (and, for Qwen3-ASR, optionally a source language) in the
-   UI, then upload -> saved to `data/<job_id>/source.*`
-2. `ffmpeg` extracts a 16kHz mono wav
-3. The wav is read into a float32 array and split into fixed-size chunks
-   (10 minutes for Parakeet, 30 seconds for Qwen3-ASR's native encoder
-   window; no overlap — a word occasionally split at a boundary is an
-   accepted tradeoff for keeping this simple); each chunk goes through that
-   backend's `model.generate()`
-4. Each backend turns its chunk output into the same `Segment(start, end,
-   text)` shape (`app/asr/common.py`) regardless of how it got there --
-   Parakeet's native per-token timestamps grouped into readable lines,
-   Qwen3-ASR's one segment per 30s chunk -- and the raw segments are saved
-   as `data/<job_id>/segments.json`
-5. The browser preview (scrollable, fixed-height, so a long transcript
-   doesn't stretch the page) and both download formats are all rendered from
-   that same JSON on demand -- toggle "Timestamps" to switch between one
-   timestamped line per segment and one continuous paragraph, "Copy text"
-   copies the plain-text transcript to the clipboard, and you can download
-   as Markdown (`.md`) or Word (`.docx`), in either timestamp mode, without
-   re-running the model
-
-Jobs are tracked in memory only (`app/jobs.py`) -- this is a personal
-single-user tool, not a multi-tenant service. Restarting the server drops
-any in-flight job.
-
-### Model loading and availability
-
-Only the default backend (Qwen3-ASR) is warmed up at startup, in a
-background thread -- not blocking, so the server accepts connections (and
-the UI loads) immediately rather than hanging until a multi-GB first-run
-download finishes. `GET /api/models` reports each backend's state
-(`not_loaded`/`loading`/`ready`/`error`) and, while loading, how many
-seconds it's been at it; the UI polls this every 3s and disables uploading
-with a visible banner for whichever model is currently selected and still
-loading (or shows the error if loading failed). This is availability
-status, not byte-level download progress -- huggingface_hub doesn't expose
-file-level progress through a simple public callback, and a fake percentage
-would be worse than an honest "loading, Ns so far."
-
-The *other* backend (Parakeet, if Qwen3-ASR is selected) stays
-`not_loaded` and loads lazily on its first actual use -- its first request
-is just slower while that happens, folded into the job's existing
-"Transcribing..." status rather than its own banner.
-
-### Cancelling a running job
-
-Transcription can take a while, especially for long files on CPU, so there's
-a timer (elapsed time, ticking live) and a Cancel button while a job is in
-progress. Cancellation is cooperative, not preemptive: `POST
-/api/jobs/{id}/cancel` just sets a flag, and the running backend checks it
-*between* chunks, not inside one. That means response time depends on chunk
-size -- Qwen3-ASR (30s chunks) stops within moments; Parakeet (10-minute
-chunks) can take up to the remainder of whatever chunk is in flight.
-Whatever chunks finished before the flag was noticed are kept and become a
-downloadable partial transcript, not discarded.
+See [`docs/how-it-works.md`](docs/how-it-works.md) for the processing
+pipeline (upload -> chunking -> per-backend transcription -> rendering),
+how model loading/availability is surfaced to the UI, and how job
+cancellation works.
 
 ## Language: one backend fakes it, the other doesn't
 
@@ -250,30 +248,10 @@ clearly in a different one.
 
 ## Development
 
-```bash
-uv run ruff check .          # lint
-uv run ruff format --check . # formatting
-uv run pytest -v             # tests (loads the real models, no mocks)
-```
+See [`docs/development.md`](docs/development.md) for linting, running
+tests, and how CI/release automation are split (fast lint+test on every PR
+vs. the slower container/macOS artifact builds on push to `main`).
 
-`tests/test_parakeet.py` and `tests/test_qwen3.py` are end-to-end smoke
-tests, not unit tests with the models mocked out: they load the real models
-and transcribe a real speech sample (`tests/fixtures/libri_sample.wav`,
-from the public LibriSpeech dummy dataset). That's deliberate -- every bug
-this project has hit so far (missing `librosa`/`accelerate`, a token-joining
-spacing bug that garbled every word, a mis-nested processor kwarg) only
-showed up once a model actually loaded and ran; a mocked test would have
-passed right through all of them.
+## License
 
-CI (`.github/workflows/ci.yml`) runs on every push to `main` and every PR.
-GitHub Actions are pinned to commit SHAs, not mutable tags.
-
-- `lint` and `test` run on every PR and push, for fast iteration feedback.
-- `container-build` (builds `Containerfile`, smoke-checks the image imports)
-  and `macos-build` (builds the `.app` bundle on a real `macos-latest`
-  runner via `macos/setup.py py2app`) only run on push to `main` or manual
-  dispatch, not every PR -- the macOS build in particular has taken 30+
-  minutes in testing, and paying that on every PR push would badly slow
-  down normal iteration. These catch packaging regressions in the actual
-  deployable artifacts shortly after merge, giving consistent automated
-  feedback instead of relying on an ad hoc local build.
+[Apache License 2.0](LICENSE).

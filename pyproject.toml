@@ -5,6 +5,7 @@ description = "Transcribe audio/video to Markdown or Word with Qwen3-ASR or NVID
 authors = [
     { name = "William Caban", email = "william.caban@gmail.com" }
 ]
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
