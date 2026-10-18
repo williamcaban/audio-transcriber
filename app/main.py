@@ -15,6 +15,7 @@ backend is warmed up at startup; the other loads lazily on first use.
 import json
 import logging
 import shutil
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -25,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import jobs, media
 from .asr import BACKENDS, DEFAULT_BACKEND, Segment, to_docx, to_markdown
+from .asr import status as backend_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("transcriber.api")
@@ -42,12 +44,32 @@ DOWNLOAD_MEDIA_TYPES = {
 app = FastAPI(title="Audio Transcriber")
 
 
+def _ensure_loaded(key: str) -> None:
+    """Load a backend's model, tracking status for /api/models to report.
+
+    Safe to call repeatedly: each backend's own load_model() is a no-op once
+    loaded (guarded by its own lock), so this just adds status bookkeeping
+    around it.
+    """
+    backend_status.mark_loading(key)
+    try:
+        BACKENDS[key].load_model()
+        backend_status.mark_ready(key)
+    except Exception as exc:
+        backend_status.mark_error(key, str(exc))
+        raise
+
+
 @app.on_event("startup")
 def _warm_up_model() -> None:
-    # Load only the default backend at startup, in the main thread, so the
-    # first upload with it isn't the one that pays the model download/load
-    # cost. The other backend loads lazily on its own first use.
-    BACKENDS[DEFAULT_BACKEND].load_model()
+    # Load only the default backend, and do it in a background thread rather
+    # than blocking startup -- a blocking call here means uvicorn doesn't
+    # start accepting connections until the (multi-GB, first-run) download
+    # finishes, so the UI can't even load to show that it's happening. The
+    # other backend loads lazily on its own first use.
+    threading.Thread(
+        target=_ensure_loaded, args=(DEFAULT_BACKEND,), daemon=True
+    ).start()
 
 
 @app.get("/api/models")
@@ -57,6 +79,7 @@ async def list_models():
             "name": backend.DISPLAY_NAME,
             "supports_language_selection": backend.SUPPORTS_LANGUAGE_SELECTION,
             "languages": backend.SUPPORTED_LANGUAGES,
+            **backend_status.get(key),
         }
         for key, backend in BACKENDS.items()
     }
@@ -80,6 +103,8 @@ def _process_job(job_id: str, upload_path: Path) -> None:
         duration = media.probe_duration_seconds(str(wav_path))
 
         jobs.update_job(job_id, status=jobs.JobStatus.TRANSCRIBING)
+        if backend_status.get(job.backend)["state"] != "ready":
+            _ensure_loaded(job.backend)
         language = job.language if backend.SUPPORTS_LANGUAGE_SELECTION else None
         segments, detected_language = backend.transcribe(
             str(wav_path), duration, language, cancel_event=job.cancel_event
