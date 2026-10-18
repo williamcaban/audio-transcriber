@@ -53,7 +53,21 @@ APP = ["desktop_app.py"]
 DATA_FILES = [("static", [str(p) for p in (REPO_ROOT / "static").iterdir()])]
 OPTIONS = {
     "argv_emulation": False,
-    "packages": ["app"],
+    # By default py2app zip-compresses pure-Python packages into
+    # python313.zip for compactness. That breaks any package that ships a
+    # native .dylib/.so as package *data* and dlopen()s it via a relative
+    # path at runtime (rather than importing it as a normal compiled Python
+    # extension module, which py2app's dependency scanner does handle
+    # correctly) -- the dynamic linker can't load a library from inside a
+    # zip archive. Confirmed for `soundfile` via a real build+run attempt
+    # (OSError loading its bundled libsndfile_arm64.dylib). `torch` and
+    # `numpy` are added preemptively, not reactively: both are well-known
+    # to hit this exact failure mode in py2app/PyInstaller builds for the
+    # same reason (bundled native libraries loaded via relative paths), so
+    # it's worth fixing before the next build attempt rather than making
+    # William iterate through each one individually. If another package
+    # hits the same `OSError: cannot load library` pattern, add it here too.
+    "packages": ["app", "soundfile", "torch", "numpy"],
     "includes": ["uvicorn", "webview"],
     "plist": {
         "CFBundleName": "Audio Transcriber",
