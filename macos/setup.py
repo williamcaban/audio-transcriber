@@ -18,6 +18,30 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from app import __version__
 
+# py2app's modulegraph scans every reachable module's AST recursively
+# (ast.NodeVisitor), and torch/transformers include some very large and/or
+# deeply nested generated files that blow past Python's default recursion
+# limit (1000) partway through the scan -- not an infinite loop, just a
+# deeper tree than the default allows. Confirmed: raising this is what gets
+# the scan to complete.
+sys.setrecursionlimit(10000)
+
+# py2app unconditionally does `import zlib; copy_file(zlib.__file__, ...)`
+# while building the executable, assuming zlib is always a separate loadable
+# extension file. uv-managed Python builds (python-build-standalone)
+# statically link zlib into the interpreter for portability, so it has no
+# __file__ -- point it at the system's real zlib shared library instead
+# (harmless: that's the same code, just not compiled into this interpreter
+# as a standalone file) so py2app has something to copy.
+import zlib
+
+if not hasattr(zlib, "__file__"):
+    import ctypes.util
+
+    _libz = ctypes.util.find_library("z")
+    if _libz:
+        zlib.__file__ = _libz
+
 # py2app resolves `app=[...]` and writes build/dist output relative to the
 # current working directory, not this script's own directory -- chdir here
 # so `uv run python macos/setup.py py2app` from the repo root (as
