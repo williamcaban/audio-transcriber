@@ -32,10 +32,22 @@ MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
 # this simple.
 CHUNK_SECONDS = 600
 
+def _detect_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        # Apple Silicon. This model's transformers port is very new, so MPS
+        # op coverage isn't guaranteed -- if generate() errors on an
+        # unsupported op, force CPU with PYTORCH_ENABLE_MPS_FALLBACK=1 or by
+        # overriding this function's return value.
+        return "mps"
+    return "cpu"
+
+
 _model = None
 _processor = None
 _model_lock = threading.Lock()
-_device = "cuda" if torch.cuda.is_available() else "cpu"
+_device = _detect_device()
 
 
 @dataclass
