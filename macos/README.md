@@ -123,13 +123,26 @@ This should produce `macos/dist/Audio Transcriber.app`. Progress so far
   (`ctypes.util.find_library("z")`) when it's missing -- harmless, since
   it's the same code, just not compiled into this interpreter as a
   standalone file.
-- **Status after these fixes**: not yet confirmed to produce a working
-  `.app` end to end -- py2app's static analysis of a `torch`/`transformers`
-  dependency tree is known to be slow (a Linux-side verification run of the
-  same fix ran 30+ minutes without finishing, almost certainly just slow
-  rather than stuck, but wasn't worth waiting out on a platform that can't
-  produce a real macOS bundle anyway). Try the actual build on macOS and
-  give it time; report back whatever it does, success or a new error.
+- **Fixed**: the build succeeded (confirmed via CI and locally), but
+  *launching* the built app failed with `OSError: cannot load library
+  '.../lib/python313.zip/_soundfile_data/libsndfile_arm64.dylib'`. By
+  default py2app zip-compresses pure-Python packages into `python313.zip`
+  for compactness, which breaks any package that ships a native
+  `.dylib`/`.so` as package *data* and `dlopen()`s it via a relative path
+  at runtime (`soundfile` does exactly this) -- the dynamic linker can't
+  load a library from inside a zip archive. Fixed by adding `soundfile`
+  (confirmed broken) and `torch`/`numpy` (not yet confirmed broken, but
+  both are well-known to hit this exact pattern in py2app/PyInstaller
+  builds, so added preemptively) to `packages` in `setup.py`, which tells
+  py2app to keep them as real unzipped files on disk instead. If another
+  package hits the same `OSError: cannot load library` pattern when you
+  run the app, add it to that same list.
+- **Debugging a launch failure**: the GUI shows a generic "Launch error"
+  dialog that hides the real Python traceback. Run the bundle's actual
+  executable directly from Terminal instead to see it:
+  `"Audio Transcriber.app/Contents/MacOS/Audio Transcriber"` (confirmed
+  that's the real executable name; check `Contents/MacOS/` yourself if a
+  future rename changes it).
 
 If you'd rather skip py2app entirely, a zero-code alternative for a
 native-feeling window is Chrome/Safari's app mode pointed at a server you
