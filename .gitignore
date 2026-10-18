@@ -10,3 +10,5 @@ data/
 *.mp4
 !tests/fixtures/*.wav
 .DS_Store
+macos/build/
+macos/dist/

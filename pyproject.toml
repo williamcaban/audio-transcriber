@@ -1,7 +1,7 @@
 [project]
 name = "audio-transcriber"
 version = "0.1.0"
-description = "Transcribe audio/video to Markdown with NVIDIA Parakeet TDT 0.6B v3"
+description = "Transcribe audio/video to Markdown or Word with Qwen3-ASR or NVIDIA Parakeet TDT"
 authors = [
     { name = "William Caban", email = "william.caban@gmail.com" }
 ]
@@ -22,6 +22,13 @@ dependencies = [
     "python-docx>=1.2.0",
 ]
 
+[project.optional-dependencies]
+# macOS desktop wrapper (macos/desktop_app.py) -- restricted to darwin so
+# `uv sync` without this extra stays unaffected on Linux/CI/the container.
+desktop = [
+    "pywebview>=5.0; sys_platform == 'darwin'",
+]
+
 [tool.uv]
 package = false
 
@@ -34,10 +41,10 @@ dev = [
 [tool.pytest.ini_options]
 # tests/ has no __init__.py, so pytest's default rootdir-insertion puts
 # tests/ itself on sys.path rather than the repo root -- add it explicitly
-# so `from app.transcriber import ...` resolves.
+# so `from app.asr... import ...` resolves.
 pythonpath = ["."]
 # pytest resets the warnings filter list per test, so the module-level
-# warnings.filterwarnings() in app/transcriber.py doesn't apply here even
+# warnings.filterwarnings() in app/asr/parakeet.py doesn't apply here even
 # though it works fine outside pytest -- mirror it explicitly.
 filterwarnings = ["ignore:Using the model-agnostic default .*max_length.*:UserWarning"]
 
