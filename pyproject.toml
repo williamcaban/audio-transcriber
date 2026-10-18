@@ -23,3 +23,21 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+# tests/ has no __init__.py, so pytest's default rootdir-insertion puts
+# tests/ itself on sys.path rather than the repo root -- add it explicitly
+# so `from app.transcriber import ...` resolves.
+pythonpath = ["."]
+
+[tool.ruff.lint]
+# B008: FastAPI's `File(...)`/`Depends(...)` in default args is the
+# intentional, idiomatic pattern, not the "mutable default" bug this rule
+# otherwise catches.
+ignore = ["B008"]

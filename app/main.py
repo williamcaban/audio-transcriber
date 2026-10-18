@@ -46,12 +46,14 @@ def _process_job(job_id: str, upload_path: Path) -> None:
         jobs.update_job(job_id, status=jobs.JobStatus.TRANSCRIBING)
         segments, detected_language = transcriber.transcribe(str(wav_path), duration)
 
-        markdown = transcriber.to_markdown(job.original_filename, segments, detected_language)
+        markdown = transcriber.to_markdown(
+            job.original_filename, segments, detected_language
+        )
         markdown_path = job_dir / "transcript.md"
         markdown_path.write_text(markdown, encoding="utf-8")
 
         jobs.update_job(job_id, status=jobs.JobStatus.DONE, markdown_path=markdown_path)
-    except Exception as exc:  # noqa: BLE001 - surface any failure to the client
+    except Exception as exc:
         logger.exception("Job %s failed", job_id)
         jobs.update_job(job_id, status=jobs.JobStatus.ERROR, error=str(exc))
     finally:

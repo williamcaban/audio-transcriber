@@ -170,3 +170,23 @@ any in-flight job.
   the fix.
 - Long files are chunked at fixed 10-minute boundaries with no overlap, so a
   word spanning a boundary can be slightly garbled. Not addressed in v1.
+
+## Development
+
+```bash
+uv run ruff check .          # lint
+uv run ruff format --check . # formatting
+uv run pytest -v             # tests (loads the real model, no mocks)
+```
+
+`tests/test_transcriber.py` is an end-to-end smoke test, not a unit test
+with the model mocked out: it loads the real `AutoModelForTDT`/`AutoProcessor`
+and transcribes a real speech sample (`tests/fixtures/libri_sample.wav`,
+from the public LibriSpeech dummy dataset). That's deliberate — every bug
+this project has hit so far (missing `librosa`/`accelerate`, a token-joining
+spacing bug that garbled every word) only showed up once the model actually
+loaded and ran; a mocked test would have passed right through all of them.
+
+CI (`.github/workflows/ci.yml`) runs both lint and the test suite on every
+push to `main` and every PR. GitHub Actions are pinned to commit SHAs, not
+mutable tags.

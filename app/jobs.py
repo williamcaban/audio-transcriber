@@ -7,11 +7,10 @@ uploaded file and any partial output are cleaned up too, which is fine).
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Optional
 
 
 class JobStatus(str, Enum):
@@ -27,9 +26,9 @@ class Job:
     id: str
     original_filename: str
     status: JobStatus = JobStatus.QUEUED
-    error: Optional[str] = None
-    markdown_path: Optional[Path] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    error: str | None = None
+    markdown_path: Path | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 _jobs: dict[str, Job] = {}
@@ -43,7 +42,7 @@ def create_job(original_filename: str) -> Job:
     return job
 
 
-def get_job(job_id: str) -> Optional[Job]:
+def get_job(job_id: str) -> Job | None:
     with _lock:
         return _jobs.get(job_id)
 
