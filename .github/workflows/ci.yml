@@ -29,11 +29,12 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      # Caches the downloaded model weights (~GB) across runs. Keyed on a
-      # fixed name since the model isn't pinned to a revision -- bump the
-      # key (e.g. -v2) if upstream weights change and the cache goes stale.
+      # Caches both backends' downloaded model weights (~GB each) across
+      # runs. Keyed on a fixed name since neither model is pinned to a
+      # revision -- bump the key (e.g. -v2) if upstream weights change and
+      # the cache goes stale.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/huggingface
-          key: hf-parakeet-tdt-0.6b-v3-v1
+          key: hf-models-v1
       - run: uv run pytest -v
