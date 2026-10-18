@@ -39,9 +39,15 @@ uv pip install py2app
 uv run python macos/setup.py py2app
 ```
 
-This should produce `macos/dist/Audio Transcriber.app`. Likely rough edges,
-since this hasn't been built on a real Mac yet:
+This should produce `macos/dist/Audio Transcriber.app`. Known/likely rough
+edges:
 
+- **Fixed 2026-10-18**: `setup_requires=["py2app"]` triggered setuptools'
+  legacy `fetch_build_eggs` auto-install path, which fails on current
+  setuptools with `error: install_requires is no longer supported`. Removed
+  it -- since these instructions already have you `uv pip install py2app`
+  explicitly first, that mechanism was redundant anyway. If you hit this
+  exact error, `git pull` for the fix.
 - `packages: ["app"]` in `setup.py` tells py2app to bundle the `app/`
   package, but py2app's package discovery can be picky about what's
   importable from its own working directory vs the repo root -- if the
