@@ -128,7 +128,10 @@ def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> 
 
     def flush():
         if words:
-            segments.append(Segment(start=seg_start, end=last_end, text=" ".join(words).strip()))
+            # Tokens already carry their own leading space where a new word
+            # starts (e.g. "m", "ister", " Qu", "il", "ter" -> "mister Quilter"),
+            # so joining them with an extra separator would break words apart.
+            segments.append(Segment(start=seg_start, end=last_end, text="".join(words).strip()))
             words.clear()
 
     for entry in entries:
