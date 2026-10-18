@@ -35,6 +35,8 @@
     </section>
     <p id="model-note" class="text-xs text-slate-500 mb-4"></p>
 
+    <div id="model-availability" class="hidden mb-4 flex items-center gap-3 text-sm rounded-lg border px-3 py-2"></div>
+
     <section>
       <label id="dropzone"
         class="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-700 rounded-xl py-14 cursor-pointer transition-colors hover:border-indigo-500 hover:bg-slate-900/40">
@@ -75,6 +77,7 @@
             Timestamps
           </label>
           <div class="flex gap-3">
+            <button id="copy-button" class="text-sm text-indigo-400 hover:text-indigo-300">Copy text</button>
             <button id="download-md" class="text-sm text-indigo-400 hover:text-indigo-300">Download .md</button>
             <button id="download-docx" class="text-sm text-indigo-400 hover:text-indigo-300">Download .docx</button>
           </div>
@@ -82,7 +85,7 @@
         </div>
       </div>
       <article id="markdown-output"
-        class="prose prose-invert prose-sm max-w-none bg-slate-900/60 border border-slate-800 rounded-xl p-5"></article>
+        class="prose prose-invert prose-sm max-w-none bg-slate-900/60 border border-slate-800 rounded-xl p-5 max-h-[60vh] overflow-y-auto"></article>
     </section>
   </div>
 
@@ -91,6 +94,7 @@
     const languageSection = document.getElementById("language-section");
     const languageSelect = document.getElementById("language-select");
     const modelNote = document.getElementById("model-note");
+    const modelAvailability = document.getElementById("model-availability");
     const dropzone = document.getElementById("dropzone");
     const fileInput = document.getElementById("file-input");
     const statusSection = document.getElementById("status-section");
@@ -103,6 +107,7 @@
     const cancelledNote = document.getElementById("cancelled-note");
     const markdownOutput = document.getElementById("markdown-output");
     const timestampsToggle = document.getElementById("timestamps-toggle");
+    const copyButton = document.getElementById("copy-button");
     const downloadMdButton = document.getElementById("download-md");
     const downloadDocxButton = document.getElementById("download-docx");
     const newButton = document.getElementById("new-button");
@@ -143,16 +148,21 @@
       qwen3: "Supports forcing a source language and reports what it detected. Timestamps are chunk-level (~30s), not word-level.",
     };
 
+    let modelsLoadedOnce = false;
+
     async function loadModels() {
       const resp = await fetch("/api/models");
       models = await resp.json();
 
-      modelSelect.innerHTML = "";
-      for (const [key, model] of Object.entries(models)) {
-        const option = document.createElement("option");
-        option.value = key;
-        option.textContent = model.name;
-        modelSelect.appendChild(option);
+      if (!modelsLoadedOnce) {
+        modelSelect.innerHTML = "";
+        for (const [key, model] of Object.entries(models)) {
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = model.name;
+          modelSelect.appendChild(option);
+        }
+        modelsLoadedOnce = true;
       }
       updateModelUI();
     }
@@ -175,9 +185,39 @@
       } else {
         languageSection.classList.add("hidden");
       }
+
+      renderModelAvailability(model);
+    }
+
+    const AVAILABILITY_STYLES = {
+      loading: "border-indigo-800 bg-indigo-950/40 text-indigo-300",
+      error: "border-red-800 bg-red-950/40 text-red-300",
+    };
+
+    function renderModelAvailability(model) {
+      const blocking = model.state === "loading" || model.state === "error";
+      fileInput.disabled = blocking;
+      dropzone.classList.toggle("opacity-50", blocking);
+      dropzone.classList.toggle("cursor-not-allowed", blocking);
+      dropzone.classList.toggle("cursor-pointer", !blocking);
+
+      if (model.state === "loading") {
+        const seconds = Math.floor(model.loading_seconds || 0);
+        modelAvailability.className = `mb-4 flex items-center gap-3 text-sm rounded-lg border px-3 py-2 ${AVAILABILITY_STYLES.loading}`;
+        modelAvailability.innerHTML =
+          `<svg class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">` +
+          `<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>` +
+          `<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>` +
+          `<span>Loading ${model.name} (downloading on first run can take a few minutes)... ${seconds}s</span>`;
+      } else if (model.state === "error") {
+        modelAvailability.className = `mb-4 flex items-center gap-3 text-sm rounded-lg border px-3 py-2 ${AVAILABILITY_STYLES.error}`;
+        modelAvailability.textContent = `${model.name} failed to load: ${model.error}`;
+      }
+      modelAvailability.classList.toggle("hidden", !blocking);
     }
 
     loadModels();
+    setInterval(loadModels, 3000);
     modelSelect.addEventListener("change", updateModelUI);
 
     const STATUS_LABELS = {
@@ -217,6 +257,43 @@
       if (!currentJobId) return;
       const url = `/api/jobs/${currentJobId}/download?format=${format}&timestamps=${timestampsToggle.checked}`;
       window.location.href = url;
+    }
+
+    function fallbackCopy(text) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand("copy");
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+
+    async function copyTranscript() {
+      // innerText (not the raw markdown) so the clipboard gets plain text
+      // without `**`/markdown syntax -- this renders from marked.parse(),
+      // so bold timestamps etc. are HTML, not literal asterisks.
+      const text = markdownOutput.innerText;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          // navigator.clipboard requires a secure context (https or
+          // localhost); falls back here when accessed over plain HTTP on a
+          // LAN IP, which this app's README explicitly supports.
+          fallbackCopy(text);
+        }
+        const original = copyButton.textContent;
+        copyButton.textContent = "Copied!";
+        setTimeout(() => (copyButton.textContent = original), 1500);
+      } catch (err) {
+        console.error("Copy failed:", err);
+      }
     }
 
     async function pollJob(jobId) {
@@ -304,6 +381,7 @@
       if (currentJobId) cancelCurrentUpload(currentJobId);
     });
     timestampsToggle.addEventListener("change", refreshPreview);
+    copyButton.addEventListener("click", copyTranscript);
     downloadMdButton.addEventListener("click", () => downloadFile("md"));
     downloadDocxButton.addEventListener("click", () => downloadFile("docx"));
     newButton.addEventListener("click", resetUI);

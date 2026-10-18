@@ -18,7 +18,9 @@ large-v3, which has weak but nonzero Guaraní coverage).
 Pick Parakeet when you want precise word-level timestamps and don't care
 about forcing a language (its own auto-detect is usually right anyway);
 pick Qwen3-ASR when you need to force a language or want its detected-
-language label, and coarser timestamps are fine.
+language label, and coarser timestamps are fine. **Qwen3-ASR is the default**
+(language control matters more in practice than word-level timestamps) --
+switch to Parakeet in the Model dropdown if you want those instead.
 
 ## Requirements
 
@@ -160,17 +162,36 @@ requires `>=3.13`, so either image works).
    Parakeet's native per-token timestamps grouped into readable lines,
    Qwen3-ASR's one segment per 30s chunk -- and the raw segments are saved
    as `data/<job_id>/segments.json`
-5. The browser preview and both download formats are all rendered from that
-   same JSON on demand -- toggle "Timestamps" to switch between one
-   timestamped line per segment and one continuous paragraph, and download
+5. The browser preview (scrollable, fixed-height, so a long transcript
+   doesn't stretch the page) and both download formats are all rendered from
+   that same JSON on demand -- toggle "Timestamps" to switch between one
+   timestamped line per segment and one continuous paragraph, "Copy text"
+   copies the plain-text transcript to the clipboard, and you can download
    as Markdown (`.md`) or Word (`.docx`), in either timestamp mode, without
    re-running the model
 
 Jobs are tracked in memory only (`app/jobs.py`) -- this is a personal
 single-user tool, not a multi-tenant service. Restarting the server drops
-any in-flight job. Only the default backend (Parakeet) is warmed up at
-startup; Qwen3-ASR loads lazily on its first use, so its first request is
-slower while the model downloads/loads.
+any in-flight job.
+
+### Model loading and availability
+
+Only the default backend (Qwen3-ASR) is warmed up at startup, in a
+background thread -- not blocking, so the server accepts connections (and
+the UI loads) immediately rather than hanging until a multi-GB first-run
+download finishes. `GET /api/models` reports each backend's state
+(`not_loaded`/`loading`/`ready`/`error`) and, while loading, how many
+seconds it's been at it; the UI polls this every 3s and disables uploading
+with a visible banner for whichever model is currently selected and still
+loading (or shows the error if loading failed). This is availability
+status, not byte-level download progress -- huggingface_hub doesn't expose
+file-level progress through a simple public callback, and a fake percentage
+would be worse than an honest "loading, Ns so far."
+
+The *other* backend (Parakeet, if Qwen3-ASR is selected) stays
+`not_loaded` and loads lazily on its first actual use -- its first request
+is just slower while that happens, folded into the job's existing
+"Transcribing..." status rather than its own banner.
 
 ### Cancelling a running job
 
