@@ -43,10 +43,18 @@
     </section>
 
     <section id="result-section" class="mt-8 hidden">
-      <div class="flex items-center justify-between mb-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h2 class="text-sm font-medium text-slate-300">Transcript</h2>
-        <div class="flex gap-3">
-          <a id="download-link" class="text-sm text-indigo-400 hover:text-indigo-300" href="#" download>Download .md</a>
+        <div class="flex flex-wrap items-center gap-4">
+          <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input id="timestamps-toggle" type="checkbox" checked
+              class="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500" />
+            Timestamps
+          </label>
+          <div class="flex gap-3">
+            <button id="download-md" class="text-sm text-indigo-400 hover:text-indigo-300">Download .md</button>
+            <button id="download-docx" class="text-sm text-indigo-400 hover:text-indigo-300">Download .docx</button>
+          </div>
           <button id="new-button" class="text-sm text-slate-400 hover:text-slate-200">Transcribe another</button>
         </div>
       </div>
@@ -64,8 +72,12 @@
     const errorText = document.getElementById("error-text");
     const resultSection = document.getElementById("result-section");
     const markdownOutput = document.getElementById("markdown-output");
-    const downloadLink = document.getElementById("download-link");
+    const timestampsToggle = document.getElementById("timestamps-toggle");
+    const downloadMdButton = document.getElementById("download-md");
+    const downloadDocxButton = document.getElementById("download-docx");
     const newButton = document.getElementById("new-button");
+
+    let currentJobId = null;
 
     const STATUS_LABELS = {
       queued: "Queued...",
@@ -76,6 +88,7 @@
     };
 
     function resetUI() {
+      currentJobId = null;
       statusSection.classList.add("hidden");
       errorSection.classList.add("hidden");
       resultSection.classList.add("hidden");
@@ -86,6 +99,19 @@
       statusSection.classList.add("hidden");
       errorSection.classList.remove("hidden");
       errorText.textContent = message;
+    }
+
+    async function refreshPreview() {
+      if (!currentJobId) return;
+      const resp = await fetch(`/api/jobs/${currentJobId}/markdown?timestamps=${timestampsToggle.checked}`);
+      const { markdown } = await resp.json();
+      markdownOutput.innerHTML = marked.parse(markdown);
+    }
+
+    function downloadFile(format) {
+      if (!currentJobId) return;
+      const url = `/api/jobs/${currentJobId}/download?format=${format}&timestamps=${timestampsToggle.checked}`;
+      window.location.href = url;
     }
 
     async function pollJob(jobId) {
@@ -104,10 +130,8 @@
       statusText.textContent = STATUS_LABELS[job.status] || job.status;
 
       if (job.status === "done") {
-        const mdResp = await fetch(`/api/jobs/${jobId}/markdown`);
-        const { markdown } = await mdResp.json();
-        markdownOutput.innerHTML = marked.parse(markdown);
-        downloadLink.href = `/api/jobs/${jobId}/download`;
+        currentJobId = jobId;
+        await refreshPreview();
         statusSection.classList.add("hidden");
         resultSection.classList.remove("hidden");
         return;
@@ -152,6 +176,9 @@
       if (fileInput.files.length) uploadFile(fileInput.files[0]);
     });
 
+    timestampsToggle.addEventListener("change", refreshPreview);
+    downloadMdButton.addEventListener("click", () => downloadFile("md"));
+    downloadDocxButton.addEventListener("click", () => downloadFile("docx"));
     newButton.addEventListener("click", resetUI);
   </script>
 </body>

@@ -19,6 +19,7 @@ dependencies = [
     # yet; this tracks the tip of main. Pin to a commit once you've confirmed
     # a working version: transformers @ git+https://github.com/huggingface/transformers.git@<sha>
     "transformers @ git+https://github.com/huggingface/transformers.git",
+    "python-docx>=1.2.0",
 ]
 
 [tool.uv]

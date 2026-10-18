@@ -215,18 +215,65 @@ def _format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _metadata_fields(detected_language: str | None) -> list[tuple[str, str]]:
+    fields = [
+        ("Generated", datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")),
+        ("Model", MODEL_NAME),
+    ]
+    if detected_language:
+        fields.append(("Detected language", detected_language))
+    return fields
+
+
 def to_markdown(
-    original_filename: str, segments: list[Segment], detected_language: str | None
+    original_filename: str,
+    segments: list[Segment],
+    detected_language: str | None,
+    with_timestamps: bool = True,
 ) -> str:
     lines = [f"# Transcript: {original_filename}", ""]
-    lines.append(f"- **Generated:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append(f"- **Model:** {MODEL_NAME}")
-    if detected_language:
-        lines.append(f"- **Detected language:** {detected_language}")
+    lines += [
+        f"- **{label}:** {value}"
+        for label, value in _metadata_fields(detected_language)
+    ]
     lines.append("")
 
-    for seg in segments:
-        lines.append(f"**[{_format_timestamp(seg.start)}]** {seg.text}")
-        lines.append("")
+    if with_timestamps:
+        for seg in segments:
+            lines.append(f"**[{_format_timestamp(seg.start)}]** {seg.text}")
+            lines.append("")
+    else:
+        lines.append(" ".join(seg.text for seg in segments))
 
     return "\n".join(lines)
+
+
+def to_docx(
+    original_filename: str,
+    segments: list[Segment],
+    detected_language: str | None,
+    with_timestamps: bool = True,
+) -> bytes:
+    import io
+
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading(f"Transcript: {original_filename}", level=1)
+    meta_paragraph = doc.add_paragraph()
+    meta_text = " | ".join(
+        f"{label}: {value}" for label, value in _metadata_fields(detected_language)
+    )
+    meta_paragraph.add_run(meta_text).italic = True
+
+    if with_timestamps:
+        for seg in segments:
+            p = doc.add_paragraph()
+            p.add_run(f"[{_format_timestamp(seg.start)}] ").bold = True
+            p.add_run(seg.text)
+    else:
+        doc.add_paragraph(" ".join(seg.text for seg in segments))
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()

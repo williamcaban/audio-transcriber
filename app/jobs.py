@@ -27,7 +27,10 @@ class Job:
     original_filename: str
     status: JobStatus = JobStatus.QUEUED
     error: str | None = None
-    markdown_path: Path | None = None
+    # Raw transcription result (segments + detected_language), persisted as
+    # JSON so any output view/format can be rendered on demand without
+    # re-running the model -- see transcriber.to_markdown/to_docx.
+    segments_path: Path | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
