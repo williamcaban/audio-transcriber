@@ -6,8 +6,7 @@ talks to the model directly, it just hosts the existing server locally and
 points a native window at it.
 
 Run with:
-    uv sync --extra desktop
-    uv run python macos/desktop_app.py
+    uv run --extra desktop python macos/desktop_app.py
 
 To package as a double-clickable .app, see setup.py in this directory.
 """
@@ -26,9 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import uvicorn
 import webview
 
+from app import __version__
 from app.main import app as fastapi_app
 
 HOST = "127.0.0.1"
+WINDOW_TITLE = f"Audio Transcriber v{__version__}"
 
 
 def _free_port() -> int:
@@ -64,7 +65,7 @@ def main() -> None:
     _wait_until_reachable(port)
 
     webview.create_window(
-        "Audio Transcriber",
+        WINDOW_TITLE,
         f"http://{HOST}:{port}",
         width=960,
         height=800,

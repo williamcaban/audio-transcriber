@@ -16,9 +16,12 @@ breaks.
 ## Run without bundling
 
 ```bash
-uv sync --extra desktop
-uv run python macos/desktop_app.py
+uv run --extra desktop python macos/desktop_app.py
 ```
+
+One command: `--extra desktop` tells `uv run` to sync in `pywebview` (and,
+for the packaging step below, `py2app`) for just this invocation, so there's
+no separate `uv sync` step to remember.
 
 This opens a native window pointed at a locally-run copy of the server (a
 random free port, not the usual 8000/8080). Model loading behaves exactly
@@ -29,36 +32,47 @@ index.html` and `app/` code, just hosted in a window instead of a tab.
 ## Package as a double-clickable .app (untested, try it)
 
 [py2app](https://py2app.readthedocs.io/) bundles a Python app into a
-standalone macOS `.app`. It's a macOS-only build tool, so it's not in
-`pyproject.toml`'s dependency groups (those get resolved on every
-platform, even when unused) -- install it separately:
+standalone macOS `.app`:
 
 ```bash
-uv sync --extra desktop
-uv pip install py2app
-uv run python macos/setup.py py2app
+uv run --extra desktop python macos/setup.py py2app
 ```
 
-This should produce `macos/dist/Audio Transcriber.app`. Known/likely rough
-edges:
+`py2app` is part of the `desktop` extra (darwin-only, like pywebview) --
+**don't** `uv pip install py2app` as a separate step: `uv run` re-syncs the
+environment to match the lockfile before every run, so anything installed
+out-of-band that way gets silently removed the next time you run anything
+with `uv run` (this bit a real build attempt: py2app installed and worked,
+then `invalid command 'py2app'` on the very next `uv run` invocation). The
+`--extra desktop` flag is what makes it persist correctly, in one command.
 
-- **Fixed 2026-10-18**: `setup_requires=["py2app"]` triggered setuptools'
-  legacy `fetch_build_eggs` auto-install path, which fails on current
-  setuptools with `error: install_requires is no longer supported`. Removed
-  it -- since these instructions already have you `uv pip install py2app`
-  explicitly first, that mechanism was redundant anyway. If you hit this
-  exact error, `git pull` for the fix.
-- `packages: ["app"]` in `setup.py` tells py2app to bundle the `app/`
-  package, but py2app's package discovery can be picky about what's
-  importable from its own working directory vs the repo root -- if the
-  build fails to find `app`, that's the first thing to check.
-- The bundled app needs network access on first run to download the
-  Qwen3-ASR/Parakeet model weights into the user's Hugging Face cache (same
-  as any other first run) -- there's no model baked into the `.app` itself.
-- `torch`/`transformers` are large; py2app may need `--includes` or
-  `--packages` tweaks beyond what's in `setup.py` to pick up their full
-  dependency trees. If the built `.app` crashes on launch with an
-  `ImportError`, that's almost certainly this.
+This should produce `macos/dist/Audio Transcriber.app`. Progress so far
+(each found via real build attempts, not guessed):
+
+- **Fixed**: `setup_requires=["py2app"]` triggered setuptools' legacy
+  `fetch_build_eggs` auto-install path, which fails on current setuptools
+  with `error: install_requires is no longer supported`. Removed it.
+- **Fixed**: that same error came back even with py2app properly installed
+  via the `desktop` extra -- turns out it's unrelated to `setup_requires`.
+  Modern setuptools auto-copies this project's root `pyproject.toml`
+  `[project.dependencies]` onto the build `Distribution`, and py2app
+  `>=0.28.9` unconditionally rejects any non-empty `install_requires`
+  (`py2app/build_app.py`, inside `finalize_options`). Fixed with a small
+  `cmdclass` override in `setup.py` that clears it right before py2app's
+  own check runs -- confirmed this specific error no longer occurs.
+- **Fixed**: py2app resolves `app=["desktop_app.py"]` and writes `build/`
+  and `dist/` relative to the *current working directory*, not this
+  script's own directory -- following "run from the repo root" (as these
+  instructions say) meant it looked for `desktop_app.py` at the repo root
+  and failed. `setup.py` now `chdir`s to its own directory first.
+- **Known, unresolved**: past those fixes, py2app's module-dependency
+  scanner (`modulegraph`, AST-based) hit a `RecursionError` while walking
+  this project's dependency tree -- almost certainly `torch`/`transformers`,
+  whose generated/huge modules are a known pain point for py2app and
+  PyInstaller alike. Not yet fixed. If you hit this, a next step worth
+  trying is raising `sys.setrecursionlimit()` in `setup.py` before calling
+  `setup()`, or excluding specific heavy submodules py2app doesn't need to
+  trace fully.
 
 If you'd rather skip py2app entirely, a zero-code alternative for a
 native-feeling window is Chrome/Safari's app mode pointed at a server you

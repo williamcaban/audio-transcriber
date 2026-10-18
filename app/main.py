@@ -24,9 +24,11 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import jobs, media
+from . import __version__, jobs, media
 from .asr import BACKENDS, DEFAULT_BACKEND, Segment, to_docx, to_markdown
 from .asr import status as backend_status
+
+APP_NAME = "Audio Transcriber"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("transcriber.api")
@@ -41,7 +43,7 @@ DOWNLOAD_MEDIA_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
-app = FastAPI(title="Audio Transcriber")
+app = FastAPI(title=APP_NAME, version=__version__)
 
 
 def _ensure_loaded(key: str) -> None:
@@ -70,6 +72,11 @@ def _warm_up_model() -> None:
     threading.Thread(
         target=_ensure_loaded, args=(DEFAULT_BACKEND,), daemon=True
     ).start()
+
+
+@app.get("/api/version")
+async def get_version():
+    return {"name": APP_NAME, "version": __version__}
 
 
 @app.get("/api/models")

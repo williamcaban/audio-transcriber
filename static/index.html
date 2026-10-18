@@ -216,6 +216,17 @@
       modelAvailability.classList.toggle("hidden", !blocking);
     }
 
+    async function loadVersion() {
+      try {
+        const resp = await fetch("/api/version");
+        const { name, version } = await resp.json();
+        document.title = `${name} v${version}`;
+      } catch (err) {
+        console.error("Failed to load version:", err);
+      }
+    }
+
+    loadVersion();
     loadModels();
     setInterval(loadModels, 3000);
     modelSelect.addEventListener("change", updateModelUI);
