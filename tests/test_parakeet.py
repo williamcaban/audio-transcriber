@@ -9,7 +9,7 @@ have passed right through all of them.
 
 from pathlib import Path
 
-from app.transcriber import transcribe
+from app.asr.parakeet import transcribe
 
 FIXTURE = Path(__file__).parent / "fixtures" / "libri_sample.wav"
 
