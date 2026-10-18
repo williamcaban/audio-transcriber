@@ -145,13 +145,27 @@ requires `>=3.13`, so either image works).
    accepted tradeoff for keeping this simple); each chunk goes through
    `model.generate()` and `processor.decode(..., durations=...)`
 4. Per-token/word timestamps are grouped into readable lines (new line every
-   ~15s or at sentence-ending punctuation) and rendered into a timestamped
-   Markdown transcript, served back to the browser and available as a `.md`
-   download
+   ~15s or at sentence-ending punctuation) and the raw segments are saved as
+   `data/<job_id>/segments.json`
+5. The browser preview and both download formats are all rendered from that
+   same JSON on demand — toggle "Timestamps" to switch between one
+   timestamped line per segment and one continuous paragraph, and download
+   as Markdown (`.md`) or Word (`.docx`), in either timestamp mode, without
+   re-running the model
 
 Jobs are tracked in memory only (`app/jobs.py`) — this is a personal
 single-user tool, not a multi-tenant service. Restarting the server drops
 any in-flight job.
+
+## Language: no forcing, no detection
+
+Parakeet TDT has no API to force a specific source language, and this
+`transformers` port doesn't expose a detected-language field either (both
+confirmed by reading `processing_parakeet.py`/`generation_parakeet.py` in
+the installed package — there's no language token, prompt mechanism, or
+output field anywhere). It's a pure auto-detecting acoustic model. That's
+why there's no language picker in the UI: a dropdown that can't actually
+change the model's behavior would just be a lie dressed as a feature.
 
 ## Known limitations / next steps
 
@@ -165,9 +179,6 @@ any in-flight job.
 - Single model instance processes one job at a time (background tasks run
   sequentially against the one loaded model); fine for personal use, not for
   concurrent multi-user load.
-- No forced language hint — the model auto-detects; if it ever picks the
-  wrong language for a mixed-language file, a manual override param would be
-  the fix.
 - Long files are chunked at fixed 10-minute boundaries with no overlap, so a
   word spanning a boundary can be slightly garbled. Not addressed in v1.
 
