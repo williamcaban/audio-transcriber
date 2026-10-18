@@ -6,12 +6,12 @@ window (WKWebView on macOS, via [pywebview](https://pywebview.flowrl.com/))
 instead of a browser tab. No model code is duplicated or reimplemented --
 this is a presentation layer on top of `app/`.
 
-**Verification status:** written and checked on Linux (no macOS/Xcode
-environment available here) -- the server-launching logic (port selection,
-readiness wait, actual HTTP calls into the FastAPI app) is verified, since
-that's plain Python. The native window itself (pywebview's WKWebView
-backend, and the py2app `.app` bundle below) is **not yet verified on real
-macOS** -- try it and report back what breaks.
+**Verification status:** `uv run python macos/desktop_app.py` is confirmed
+working on real macOS (2026-10-18) -- the native WKWebView window comes up
+and runs the app correctly. Built and checked from a Linux machine with no
+macOS/Xcode access, so this was genuinely unverified until tried. The
+py2app `.app` bundle below is still untested -- try it and report back what
+breaks.
 
 ## Run without bundling
 
