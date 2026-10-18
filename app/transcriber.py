@@ -15,8 +15,7 @@ ourselves before inference (see `CHUNK_SECONDS`).
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import numpy as np
 import soundfile as sf
@@ -31,6 +30,7 @@ MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
 # occasionally split at a chunk boundary is an accepted tradeoff for keeping
 # this simple.
 CHUNK_SECONDS = 600
+
 
 def _detect_device() -> str:
     if torch.cuda.is_available():
@@ -70,7 +70,9 @@ def load_model():
                     "much slower than real-time, and long files may be impractical."
                 )
             _processor = AutoProcessor.from_pretrained(MODEL_NAME)
-            _model = AutoModelForTDT.from_pretrained(MODEL_NAME, dtype="auto", device_map=_device)
+            _model = AutoModelForTDT.from_pretrained(
+                MODEL_NAME, dtype="auto", device_map=_device
+            )
             _model.eval()
             logger.info("Model loaded.")
     return _model, _processor
@@ -95,7 +97,9 @@ def _chunk_audio(audio: np.ndarray, sample_rate: int, chunk_seconds: int):
         yield start_time, audio[start_sample : start_sample + chunk_len]
 
 
-def _transcribe_chunk(model, processor, audio_chunk: np.ndarray, sample_rate: int) -> tuple[str, list]:
+def _transcribe_chunk(
+    model, processor, audio_chunk: np.ndarray, sample_rate: int
+) -> tuple[str, list]:
     inputs = processor(audio=[audio_chunk], sampling_rate=sample_rate)
     inputs.to(model.device, dtype=model.dtype)
 
@@ -108,11 +112,17 @@ def _transcribe_chunk(model, processor, audio_chunk: np.ndarray, sample_rate: in
         skip_special_tokens=True,
     )
     text = text[0] if isinstance(text, list) else text
-    entries = timestamps[0] if timestamps and isinstance(timestamps, list) else (timestamps or [])
+    entries = (
+        timestamps[0]
+        if timestamps and isinstance(timestamps, list)
+        else (timestamps or [])
+    )
     return text, entries
 
 
-def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> list[Segment]:
+def _entries_to_segments(
+    entries: list, chunk_start: float, chunk_text: str
+) -> list[Segment]:
     """Group per-token/word timestamp entries into readable lines.
 
     The exact shape of `entries` isn't pinned down by stable docs yet (this
@@ -123,7 +133,7 @@ def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> 
     """
     segments: list[Segment] = []
     words: list[str] = []
-    seg_start: Optional[float] = None
+    seg_start: float | None = None
     last_end = chunk_start
 
     def flush():
@@ -131,7 +141,9 @@ def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> 
             # Tokens already carry their own leading space where a new word
             # starts (e.g. "m", "ister", " Qu", "il", "ter" -> "mister Quilter"),
             # so joining them with an extra separator would break words apart.
-            segments.append(Segment(start=seg_start, end=last_end, text="".join(words).strip()))
+            segments.append(
+                Segment(start=seg_start, end=last_end, text="".join(words).strip())
+            )
             words.clear()
 
     for entry in entries:
@@ -160,7 +172,9 @@ def _entries_to_segments(entries: list, chunk_start: float, chunk_text: str) -> 
     return segments
 
 
-def transcribe(wav_path: str, duration_seconds: float) -> tuple[list[Segment], Optional[str]]:
+def transcribe(
+    wav_path: str, duration_seconds: float
+) -> tuple[list[Segment], str | None]:
     model, processor = load_model()
     sample_rate = processor.feature_extractor.sampling_rate
 
@@ -175,8 +189,11 @@ def transcribe(wav_path: str, duration_seconds: float) -> tuple[list[Segment], O
         segments = []
         try:
             segments = _entries_to_segments(entries, chunk_start, text)
-        except Exception:  # noqa: BLE001 - timestamp parsing is best-effort
-            logger.warning("Could not parse per-token timestamps for this chunk; using plain text", exc_info=True)
+        except Exception:
+            logger.warning(
+                "Could not parse per-token timestamps for this chunk; using plain text",
+                exc_info=True,
+            )
 
         if not segments and text.strip():
             chunk_end = chunk_start + len(audio_chunk) / sample_rate
@@ -198,9 +215,11 @@ def _format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def to_markdown(original_filename: str, segments: list[Segment], detected_language: Optional[str]) -> str:
+def to_markdown(
+    original_filename: str, segments: list[Segment], detected_language: str | None
+) -> str:
     lines = [f"# Transcript: {original_filename}", ""]
-    lines.append(f"- **Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"- **Generated:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"- **Model:** {MODEL_NAME}")
     if detected_language:
         lines.append(f"- **Detected language:** {detected_language}")
