@@ -6,12 +6,12 @@ window (WKWebView on macOS, via [pywebview](https://pywebview.flowrl.com/))
 instead of a browser tab. No model code is duplicated or reimplemented --
 this is a presentation layer on top of `app/`.
 
-**Verification status:** written and checked on Linux (no macOS/Xcode
-environment available here) -- the server-launching logic (port selection,
-readiness wait, actual HTTP calls into the FastAPI app) is verified, since
-that's plain Python. The native window itself (pywebview's WKWebView
-backend, and the py2app `.app` bundle below) is **not yet verified on real
-macOS** -- try it and report back what breaks.
+**Verification status:** `uv run python macos/desktop_app.py` is confirmed
+working on real macOS (2026-10-18) -- the native WKWebView window comes up
+and runs the app correctly. Built and checked from a Linux machine with no
+macOS/Xcode access, so this was genuinely unverified until tried. The
+py2app `.app` bundle below is still untested -- try it and report back what
+breaks.
 
 ## Run without bundling
 
@@ -39,9 +39,15 @@ uv pip install py2app
 uv run python macos/setup.py py2app
 ```
 
-This should produce `macos/dist/Audio Transcriber.app`. Likely rough edges,
-since this hasn't been built on a real Mac yet:
+This should produce `macos/dist/Audio Transcriber.app`. Known/likely rough
+edges:
 
+- **Fixed 2026-10-18**: `setup_requires=["py2app"]` triggered setuptools'
+  legacy `fetch_build_eggs` auto-install path, which fails on current
+  setuptools with `error: install_requires is no longer supported`. Removed
+  it -- since these instructions already have you `uv pip install py2app`
+  explicitly first, that mechanism was redundant anyway. If you hit this
+  exact error, `git pull` for the fix.
 - `packages: ["app"]` in `setup.py` tells py2app to bundle the `app/`
   package, but py2app's package discovery can be picky about what's
   importable from its own working directory vs the repo root -- if the

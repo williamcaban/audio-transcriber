@@ -65,10 +65,9 @@ first startup (a few GB) and is cached by `huggingface_hub` after that.
 
 Two options to run the web app; native is recommended on Apple Silicon
 since it can use the GPU via Metal (MPS), which a container can't reach.
-For an actual native-feeling window instead of a browser tab, see
+For an actual native window instead of a browser tab, see
 [`macos/README.md`](macos/README.md) -- a thin wrapper that reuses this
-same server and UI, status: built and logic-tested here, not yet verified
-on real macOS.
+same server and UI, confirmed working on real macOS.
 
 ### Native (recommended on Apple Silicon)
 
