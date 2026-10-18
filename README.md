@@ -127,13 +127,12 @@ brew install podman
 podman machine init
 podman machine start
 
-# the image is currently private — log in first
-echo "<a GitHub token with read:packages>" | podman login ghcr.io -u <your-github-username> --password-stdin
-
-podman pull ghcr.io/williamcaban/audio-transcriber:latest
+# public, no login needed -- :dev tracks main (see Releases below for
+# :latest/:vX.Y.Z once a version is tagged)
+podman pull ghcr.io/williamcaban/audio-transcriber:dev
 podman run --rm -p 8080:8080 \
   -v audio-transcriber-model-cache:/opt/app-root/src/.cache/huggingface \
-  ghcr.io/williamcaban/audio-transcriber:latest
+  ghcr.io/williamcaban/audio-transcriber:dev
 ```
 
 Then open http://localhost:8080 either way the image is pulled. See
