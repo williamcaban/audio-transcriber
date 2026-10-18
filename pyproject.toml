@@ -27,6 +27,14 @@ dependencies = [
 # `uv sync` without this extra stays unaffected on Linux/CI/the container.
 desktop = [
     "pywebview>=5.0; sys_platform == 'darwin'",
+    # py2app bundles desktop_app.py into a double-clickable .app (see
+    # macos/setup.py). Declared here, not installed ad hoc, because `uv run`
+    # re-syncs the environment to match the lockfile before every run -- an
+    # out-of-band `uv pip install py2app` gets silently removed the next
+    # time `uv run` is invoked. Found via a real build attempt on macOS
+    # (`error: invalid command 'py2app'` after it had installed and worked
+    # moments before).
+    "py2app>=0.28.8; sys_platform == 'darwin'",
 ]
 
 [tool.uv]
