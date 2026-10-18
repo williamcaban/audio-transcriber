@@ -36,6 +36,10 @@ dev = [
 # tests/ itself on sys.path rather than the repo root -- add it explicitly
 # so `from app.transcriber import ...` resolves.
 pythonpath = ["."]
+# pytest resets the warnings filter list per test, so the module-level
+# warnings.filterwarnings() in app/transcriber.py doesn't apply here even
+# though it works fine outside pytest -- mirror it explicitly.
+filterwarnings = ["ignore:Using the model-agnostic default .*max_length.*:UserWarning"]
 
 [tool.ruff.lint]
 # B008: FastAPI's `File(...)`/`Depends(...)` in default args is the

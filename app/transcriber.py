@@ -14,6 +14,7 @@ ourselves before inference (see `CHUNK_SECONDS`).
 
 import logging
 import threading
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -22,6 +23,19 @@ import soundfile as sf
 import torch
 
 logger = logging.getLogger("transcriber.model")
+
+# Misleading, not informative: transformers' generic generate() code warns
+# "using the model-agnostic default max_length" whenever max_new_tokens isn't
+# passed explicitly, but Parakeet's own generate() override (see
+# generation_parakeet.py in the installed package) always recomputes
+# max_length from the real encoder sequence length *before* that warning
+# fires -- so long audio already gets a correspondingly large token budget.
+# Confirmed by the value scaling correctly with input duration in practice.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Using the model-agnostic default `max_length`",
+    category=UserWarning,
+)
 
 MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
 
