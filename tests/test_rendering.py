@@ -4,18 +4,17 @@ import io
 
 from docx import Document
 
-from app.transcriber import Segment, to_docx, to_markdown
+from app.asr import Segment, to_docx, to_markdown
 
 SEGMENTS = [
     Segment(start=0.0, end=2.0, text="Hola, buenos dias."),
     Segment(start=2.0, end=4.5, text="Como estas hoy?"),
 ]
+MODEL_NAME = "test/model"
 
 
 def test_markdown_with_timestamps_has_one_line_per_segment():
-    markdown = to_markdown(
-        "clip.wav", SEGMENTS, detected_language=None, with_timestamps=True
-    )
+    markdown = to_markdown("clip.wav", SEGMENTS, None, MODEL_NAME, with_timestamps=True)
 
     assert "**[00:00:00]** Hola, buenos dias." in markdown
     assert "**[00:00:02]** Como estas hoy?" in markdown
@@ -23,7 +22,7 @@ def test_markdown_with_timestamps_has_one_line_per_segment():
 
 def test_markdown_without_timestamps_is_one_continuous_block():
     markdown = to_markdown(
-        "clip.wav", SEGMENTS, detected_language=None, with_timestamps=False
+        "clip.wav", SEGMENTS, None, MODEL_NAME, with_timestamps=False
     )
 
     assert "[00:00:" not in markdown
@@ -31,9 +30,7 @@ def test_markdown_without_timestamps_is_one_continuous_block():
 
 
 def test_docx_with_timestamps_has_one_paragraph_per_segment():
-    content = to_docx(
-        "clip.wav", SEGMENTS, detected_language=None, with_timestamps=True
-    )
+    content = to_docx("clip.wav", SEGMENTS, None, MODEL_NAME, with_timestamps=True)
     doc = Document(io.BytesIO(content))
 
     body_paragraphs = [p.text for p in doc.paragraphs if p.text]
@@ -47,9 +44,7 @@ def test_docx_with_timestamps_has_one_paragraph_per_segment():
 
 
 def test_docx_without_timestamps_is_one_continuous_paragraph():
-    content = to_docx(
-        "clip.wav", SEGMENTS, detected_language=None, with_timestamps=False
-    )
+    content = to_docx("clip.wav", SEGMENTS, None, MODEL_NAME, with_timestamps=False)
     doc = Document(io.BytesIO(content))
 
     body_paragraphs = [p.text for p in doc.paragraphs if p.text]

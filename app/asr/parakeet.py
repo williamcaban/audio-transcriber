@@ -1,4 +1,4 @@
-"""Parakeet TDT 0.6B v3 wrapper: load once, transcribe a wav into timestamped segments.
+"""Parakeet TDT 0.6B v3 backend: native word-level timestamps, no language control.
 
 Uses the `transformers`-native port (`AutoModelForTDT`/`AutoProcessor`)
 rather than the NeMo toolkit. NeMo's own dependency chain (pytorch-lightning,
@@ -10,19 +10,34 @@ isn't in a stable release yet (see README for the `pip install` from
 source), and the long-audio "local attention" trick NeMo exposes isn't part
 of this API. Long files are handled here instead by chunking the raw audio
 ourselves before inference (see `CHUNK_SECONDS`).
+
+No language parameter: Parakeet has no API to force or detect a source
+language (confirmed by reading processing_parakeet.py/generation_parakeet.py
+in the installed package -- no language token, prompt mechanism, or output
+field anywhere). `transcribe()` accepts `language` for interface parity with
+other backends but ignores it.
 """
 
 import logging
 import threading
 import warnings
-from dataclasses import dataclass
-from datetime import UTC, datetime
 
-import numpy as np
-import soundfile as sf
 import torch
 
-logger = logging.getLogger("transcriber.model")
+from .common import Segment, chunk_audio, detect_device, read_mono_audio
+
+logger = logging.getLogger("transcriber.parakeet")
+
+MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
+DISPLAY_NAME = "NVIDIA Parakeet TDT 0.6B v3"
+SUPPORTS_LANGUAGE_SELECTION = False
+SUPPORTED_LANGUAGES: dict[str, str] = {}
+
+# Conservative default so it behaves on modest GPUs too; override if you know
+# your hardware handles longer passes. No overlap between chunks: a word
+# occasionally split at a chunk boundary is an accepted tradeoff for keeping
+# this simple.
+CHUNK_SECONDS = 600
 
 # Misleading, not informative: transformers' generic generate() code warns
 # "using the model-agnostic default max_length" whenever max_new_tokens isn't
@@ -37,38 +52,10 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v3"
-
-# Conservative default so it behaves on modest GPUs too; override if you know
-# your hardware handles longer passes. No overlap between chunks: a word
-# occasionally split at a chunk boundary is an accepted tradeoff for keeping
-# this simple.
-CHUNK_SECONDS = 600
-
-
-def _detect_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        # Apple Silicon. This model's transformers port is very new, so MPS
-        # op coverage isn't guaranteed -- if generate() errors on an
-        # unsupported op, force CPU with PYTORCH_ENABLE_MPS_FALLBACK=1 or by
-        # overriding this function's return value.
-        return "mps"
-    return "cpu"
-
-
 _model = None
 _processor = None
 _model_lock = threading.Lock()
-_device = _detect_device()
-
-
-@dataclass
-class Segment:
-    start: float
-    end: float
-    text: str
+_device = detect_device()
 
 
 def load_model():
@@ -92,27 +79,8 @@ def load_model():
     return _model, _processor
 
 
-def _read_mono_audio(wav_path: str, target_sample_rate: int) -> np.ndarray:
-    audio, sample_rate = sf.read(wav_path, dtype="float32", always_2d=False)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-    if sample_rate != target_sample_rate:
-        # media.extract_audio already resamples to 16kHz; this only fires if
-        # that contract is ever violated, so fail loudly instead of silently
-        # mis-transcribing.
-        raise ValueError(f"expected {target_sample_rate}Hz audio, got {sample_rate}Hz")
-    return audio
-
-
-def _chunk_audio(audio: np.ndarray, sample_rate: int, chunk_seconds: int):
-    chunk_len = chunk_seconds * sample_rate
-    for start_sample in range(0, len(audio), chunk_len):
-        start_time = start_sample / sample_rate
-        yield start_time, audio[start_sample : start_sample + chunk_len]
-
-
 def _transcribe_chunk(
-    model, processor, audio_chunk: np.ndarray, sample_rate: int
+    model, processor, audio_chunk, sample_rate: int
 ) -> tuple[str, list]:
     inputs = processor(audio=[audio_chunk], sampling_rate=sample_rate)
     inputs.to(model.device, dtype=model.dtype)
@@ -187,15 +155,20 @@ def _entries_to_segments(
 
 
 def transcribe(
-    wav_path: str, duration_seconds: float
+    wav_path: str,
+    duration_seconds: float,
+    language: str | None = None,
+    cancel_event=None,
 ) -> tuple[list[Segment], str | None]:
     model, processor = load_model()
     sample_rate = processor.feature_extractor.sampling_rate
 
-    audio = _read_mono_audio(wav_path, sample_rate)
+    audio = read_mono_audio(wav_path, sample_rate)
 
     all_segments: list[Segment] = []
-    for chunk_start, audio_chunk in _chunk_audio(audio, sample_rate, CHUNK_SECONDS):
+    for chunk_start, audio_chunk in chunk_audio(audio, sample_rate, CHUNK_SECONDS):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if len(audio_chunk) == 0:
             continue
         text, entries = _transcribe_chunk(model, processor, audio_chunk, sample_rate)
@@ -220,74 +193,3 @@ def transcribe(
     detected_language = None
 
     return all_segments, detected_language
-
-
-def _format_timestamp(seconds: float) -> str:
-    total = int(seconds)
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-
-def _metadata_fields(detected_language: str | None) -> list[tuple[str, str]]:
-    fields = [
-        ("Generated", datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")),
-        ("Model", MODEL_NAME),
-    ]
-    if detected_language:
-        fields.append(("Detected language", detected_language))
-    return fields
-
-
-def to_markdown(
-    original_filename: str,
-    segments: list[Segment],
-    detected_language: str | None,
-    with_timestamps: bool = True,
-) -> str:
-    lines = [f"# Transcript: {original_filename}", ""]
-    lines += [
-        f"- **{label}:** {value}"
-        for label, value in _metadata_fields(detected_language)
-    ]
-    lines.append("")
-
-    if with_timestamps:
-        for seg in segments:
-            lines.append(f"**[{_format_timestamp(seg.start)}]** {seg.text}")
-            lines.append("")
-    else:
-        lines.append(" ".join(seg.text for seg in segments))
-
-    return "\n".join(lines)
-
-
-def to_docx(
-    original_filename: str,
-    segments: list[Segment],
-    detected_language: str | None,
-    with_timestamps: bool = True,
-) -> bytes:
-    import io
-
-    from docx import Document
-
-    doc = Document()
-    doc.add_heading(f"Transcript: {original_filename}", level=1)
-    meta_paragraph = doc.add_paragraph()
-    meta_text = " | ".join(
-        f"{label}: {value}" for label, value in _metadata_fields(detected_language)
-    )
-    meta_paragraph.add_run(meta_text).italic = True
-
-    if with_timestamps:
-        for seg in segments:
-            p = doc.add_paragraph()
-            p.add_run(f"[{_format_timestamp(seg.start)}] ").bold = True
-            p.add_run(seg.text)
-    else:
-        doc.add_paragraph(" ".join(seg.text for seg in segments))
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()

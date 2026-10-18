@@ -1,23 +1,30 @@
-"""FastAPI app: upload audio/video, transcribe with Parakeet TDT, return Markdown.
+"""FastAPI app: upload audio/video, transcribe with a selectable ASR backend, return Markdown.
 
 Flow: POST /api/jobs starts a background job (extract audio -> transcribe ->
 persist segments as JSON), the client polls GET /api/jobs/{id} for status,
 then fetches a rendered view or downloads a file -- both support toggling
 timestamps on/off and (for downloads) choosing markdown or docx, rendered
 on demand from the persisted segments rather than precomputed up front.
+
+Two ASR backends are available (see app/asr/__init__.py): Parakeet TDT
+(native word-level timestamps, no language control) and Qwen3-ASR (real
+language forcing/detection, only chunk-level timestamps). Only the default
+backend is warmed up at startup; the other loads lazily on first use.
 """
 
 import json
 import logging
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import jobs, media, transcriber
+from . import jobs, media
+from .asr import BACKENDS, DEFAULT_BACKEND, Segment, to_docx, to_markdown
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("transcriber.api")
@@ -37,27 +44,53 @@ app = FastAPI(title="Audio Transcriber")
 
 @app.on_event("startup")
 def _warm_up_model() -> None:
-    # Load at startup, in the main thread, so the first upload isn't the one
-    # that pays the (large) model download/load cost.
-    transcriber.load_model()
+    # Load only the default backend at startup, in the main thread, so the
+    # first upload with it isn't the one that pays the model download/load
+    # cost. The other backend loads lazily on its own first use.
+    BACKENDS[DEFAULT_BACKEND].load_model()
+
+
+@app.get("/api/models")
+async def list_models():
+    return {
+        key: {
+            "name": backend.DISPLAY_NAME,
+            "supports_language_selection": backend.SUPPORTS_LANGUAGE_SELECTION,
+            "languages": backend.SUPPORTED_LANGUAGES,
+        }
+        for key, backend in BACKENDS.items()
+    }
 
 
 def _process_job(job_id: str, upload_path: Path) -> None:
     job_dir = upload_path.parent
     try:
+        job = jobs.get_job(job_id)
+        backend = BACKENDS[job.backend]
+
+        if job.cancel_event.is_set():
+            jobs.update_job(
+                job_id, status=jobs.JobStatus.CANCELLED, finished_at=datetime.now(UTC)
+            )
+            return
+
         jobs.update_job(job_id, status=jobs.JobStatus.EXTRACTING)
         wav_path = job_dir / "audio.wav"
         media.extract_audio(str(upload_path), str(wav_path))
         duration = media.probe_duration_seconds(str(wav_path))
 
         jobs.update_job(job_id, status=jobs.JobStatus.TRANSCRIBING)
-        segments, detected_language = transcriber.transcribe(str(wav_path), duration)
+        language = job.language if backend.SUPPORTS_LANGUAGE_SELECTION else None
+        segments, detected_language = backend.transcribe(
+            str(wav_path), duration, language, cancel_event=job.cancel_event
+        )
 
         segments_path = job_dir / "segments.json"
         segments_path.write_text(
             json.dumps(
                 {
                     "detected_language": detected_language,
+                    "model_name": backend.MODEL_NAME,
                     "segments": [
                         {"start": s.start, "end": s.end, "text": s.text}
                         for s in segments
@@ -67,35 +100,76 @@ def _process_job(job_id: str, upload_path: Path) -> None:
             encoding="utf-8",
         )
 
-        jobs.update_job(job_id, status=jobs.JobStatus.DONE, segments_path=segments_path)
+        # Cancellation is cooperative (checked between chunks), so a
+        # cancelled job can still have finished some chunks -- write them
+        # out as a partial transcript rather than discarding the work.
+        final_status = (
+            jobs.JobStatus.CANCELLED
+            if job.cancel_event.is_set()
+            else jobs.JobStatus.DONE
+        )
+        jobs.update_job(
+            job_id,
+            status=final_status,
+            segments_path=segments_path,
+            finished_at=datetime.now(UTC),
+        )
     except Exception as exc:
         logger.exception("Job %s failed", job_id)
-        jobs.update_job(job_id, status=jobs.JobStatus.ERROR, error=str(exc))
+        jobs.update_job(
+            job_id,
+            status=jobs.JobStatus.ERROR,
+            error=str(exc),
+            finished_at=datetime.now(UTC),
+        )
     finally:
         upload_path.unlink(missing_ok=True)
         wav_candidate = job_dir / "audio.wav"
         wav_candidate.unlink(missing_ok=True)
 
 
-def _require_done_job(job_id: str) -> jobs.Job:
+_RESULT_READY_STATUSES = {jobs.JobStatus.DONE, jobs.JobStatus.CANCELLED}
+
+
+def _require_result(job_id: str) -> jobs.Job:
     job = jobs.get_job(job_id)
-    if job is None or job.status != jobs.JobStatus.DONE or job.segments_path is None:
+    if (
+        job is None
+        or job.status not in _RESULT_READY_STATUSES
+        or job.segments_path is None
+    ):
         raise HTTPException(404, "transcript not ready")
     return job
 
 
-def _load_result(job: jobs.Job) -> tuple[list[transcriber.Segment], str | None]:
+def _load_result(job: jobs.Job) -> tuple[list[Segment], str | None, str]:
     data = json.loads(job.segments_path.read_text(encoding="utf-8"))
-    segments = [transcriber.Segment(**s) for s in data["segments"]]
-    return segments, data["detected_language"]
+    segments = [Segment(**s) for s in data["segments"]]
+    return segments, data["detected_language"], data["model_name"]
 
 
 @app.post("/api/jobs")
-async def submit_job(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def submit_job(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    backend: str = Form(DEFAULT_BACKEND),
+    language: str = Form("auto"),
+):
     if not file.filename:
         raise HTTPException(400, "missing filename")
+    if backend not in BACKENDS:
+        raise HTTPException(400, f"unknown backend: {backend!r}")
 
-    job = jobs.create_job(file.filename)
+    backend_module = BACKENDS[backend]
+    resolved_language = None
+    if backend_module.SUPPORTS_LANGUAGE_SELECTION and language != "auto":
+        if language not in backend_module.SUPPORTED_LANGUAGES:
+            raise HTTPException(
+                400, f"unsupported language code for {backend!r}: {language!r}"
+            )
+        resolved_language = language
+
+    job = jobs.create_job(file.filename, backend=backend, language=resolved_language)
     job_dir = DATA_DIR / job.id
     job_dir.mkdir(parents=True, exist_ok=True)
     upload_path = job_dir / f"source{Path(file.filename).suffix}"
@@ -111,20 +185,36 @@ async def job_status(job_id: str):
     job = jobs.get_job(job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    elapsed = (job.finished_at or datetime.now(UTC)) - job.created_at
     return {
         "job_id": job.id,
         "filename": job.original_filename,
         "status": job.status,
         "error": job.error,
+        "elapsed_seconds": elapsed.total_seconds(),
     }
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    if job.status in (
+        jobs.JobStatus.QUEUED,
+        jobs.JobStatus.EXTRACTING,
+        jobs.JobStatus.TRANSCRIBING,
+    ):
+        job.cancel_event.set()
+    return {"job_id": job.id, "status": job.status}
 
 
 @app.get("/api/jobs/{job_id}/markdown")
 async def job_markdown(job_id: str, timestamps: bool = True):
-    job = _require_done_job(job_id)
-    segments, detected_language = _load_result(job)
-    markdown = transcriber.to_markdown(
-        job.original_filename, segments, detected_language, timestamps
+    job = _require_result(job_id)
+    segments, detected_language, model_name = _load_result(job)
+    markdown = to_markdown(
+        job.original_filename, segments, detected_language, model_name, timestamps
     )
     return JSONResponse({"markdown": markdown})
 
@@ -133,17 +223,17 @@ async def job_markdown(job_id: str, timestamps: bool = True):
 async def job_download(
     job_id: str, format: Literal["md", "docx"] = "md", timestamps: bool = True
 ):
-    job = _require_done_job(job_id)
-    segments, detected_language = _load_result(job)
+    job = _require_result(job_id)
+    segments, detected_language, model_name = _load_result(job)
     stem = Path(job.original_filename).stem
 
     if format == "md":
-        content = transcriber.to_markdown(
-            job.original_filename, segments, detected_language, timestamps
+        content = to_markdown(
+            job.original_filename, segments, detected_language, model_name, timestamps
         ).encode("utf-8")
     else:
-        content = transcriber.to_docx(
-            job.original_filename, segments, detected_language, timestamps
+        content = to_docx(
+            job.original_filename, segments, detected_language, model_name, timestamps
         )
 
     return Response(

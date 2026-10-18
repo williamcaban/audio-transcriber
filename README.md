@@ -1,16 +1,24 @@
 # Audio Transcriber
 
-Small FastAPI app that transcribes audio and video files to Markdown using
-NVIDIA's [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
-model, via its `transformers`-native port (`AutoModelForTDT`).
+Small FastAPI app that transcribes audio and video files to Markdown or
+Word, with a choice of two ASR backends (`app/asr/`):
 
-## Language coverage
+| | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | [Qwen3-ASR 1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) |
+|---|---|---|
+| Timestamps | Native, word-level | Chunk-level only (~30s), no native per-word timestamps |
+| Source language | Always auto-detects; **cannot be forced or reported** (no API for it) | Can force a language, and reports what it detected |
+| Languages | 25 (European) | 30 (broader: adds Arabic, Chinese, Japanese, Korean, ...) |
+| transformers release | Pre-release (installed from GitHub `main`) | Stable release |
+| Chunk size used here | 10 minutes | 30 seconds (its audio encoder's native window) |
 
-Parakeet TDT 0.6B v3 covers 25 European languages with automatic language
-detection, including **Spanish**, **English**, and **French**. It does
-**not** support Guaraní — that's a known gap for now, not a bug. If Guaraní
-transcription becomes a real need, this would need a second model wired in
-(e.g. Whisper large-v3, which has weak but nonzero Guaraní coverage).
+Neither supports **Guaraní** — that's a known gap, not a bug. If it becomes
+a real need, that would mean wiring in a third model (e.g. Whisper
+large-v3, which has weak but nonzero Guaraní coverage).
+
+Pick Parakeet when you want precise word-level timestamps and don't care
+about forcing a language (its own auto-detect is usually right anyway);
+pick Qwen3-ASR when you need to force a language or want its detected-
+language label, and coarser timestamps are fine.
 
 ## Requirements
 
@@ -66,12 +74,13 @@ uv sync
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-`app/transcriber.py` auto-detects: CUDA, then Apple's MPS backend, then
-CPU. Parakeet TDT's `transformers` port is very new, so MPS op coverage
-isn't guaranteed — if `model.generate()` errors on an unsupported op, force
-CPU by editing `_detect_device()` to always return `"cpu"` (slower, but
-guaranteed to work), or set `PYTORCH_ENABLE_MPS_FALLBACK=1` to let
-unsupported ops silently fall back to CPU per-op.
+`app/asr/common.py`'s `detect_device()` checks CUDA, then Apple's MPS
+backend, then CPU (shared by both backends). Both models' `transformers`
+ports are very new, so MPS op coverage isn't guaranteed — if
+`model.generate()` errors on an unsupported op, force CPU by editing
+`detect_device()` to always return `"cpu"` (slower, but guaranteed to
+work), or set `PYTORCH_ENABLE_MPS_FALLBACK=1` to let unsupported ops
+silently fall back to CPU per-op.
 
 ### Container (Podman Desktop)
 
@@ -138,65 +147,99 @@ requires `>=3.13`, so either image works).
 
 ## How it works
 
-1. Upload -> saved to `data/<job_id>/source.*`
+1. Pick a model (and, for Qwen3-ASR, optionally a source language) in the
+   UI, then upload -> saved to `data/<job_id>/source.*`
 2. `ffmpeg` extracts a 16kHz mono wav
-3. The wav is read into a float32 array and split into fixed 10-minute
-   chunks (no overlap — a word occasionally split at a boundary is an
-   accepted tradeoff for keeping this simple); each chunk goes through
-   `model.generate()` and `processor.decode(..., durations=...)`
-4. Per-token/word timestamps are grouped into readable lines (new line every
-   ~15s or at sentence-ending punctuation) and the raw segments are saved as
-   `data/<job_id>/segments.json`
+3. The wav is read into a float32 array and split into fixed-size chunks
+   (10 minutes for Parakeet, 30 seconds for Qwen3-ASR's native encoder
+   window; no overlap — a word occasionally split at a boundary is an
+   accepted tradeoff for keeping this simple); each chunk goes through that
+   backend's `model.generate()`
+4. Each backend turns its chunk output into the same `Segment(start, end,
+   text)` shape (`app/asr/common.py`) regardless of how it got there --
+   Parakeet's native per-token timestamps grouped into readable lines,
+   Qwen3-ASR's one segment per 30s chunk -- and the raw segments are saved
+   as `data/<job_id>/segments.json`
 5. The browser preview and both download formats are all rendered from that
-   same JSON on demand — toggle "Timestamps" to switch between one
+   same JSON on demand -- toggle "Timestamps" to switch between one
    timestamped line per segment and one continuous paragraph, and download
    as Markdown (`.md`) or Word (`.docx`), in either timestamp mode, without
    re-running the model
 
-Jobs are tracked in memory only (`app/jobs.py`) — this is a personal
+Jobs are tracked in memory only (`app/jobs.py`) -- this is a personal
 single-user tool, not a multi-tenant service. Restarting the server drops
-any in-flight job.
+any in-flight job. Only the default backend (Parakeet) is warmed up at
+startup; Qwen3-ASR loads lazily on its first use, so its first request is
+slower while the model downloads/loads.
 
-## Language: no forcing, no detection
+### Cancelling a running job
+
+Transcription can take a while, especially for long files on CPU, so there's
+a timer (elapsed time, ticking live) and a Cancel button while a job is in
+progress. Cancellation is cooperative, not preemptive: `POST
+/api/jobs/{id}/cancel` just sets a flag, and the running backend checks it
+*between* chunks, not inside one. That means response time depends on chunk
+size -- Qwen3-ASR (30s chunks) stops within moments; Parakeet (10-minute
+chunks) can take up to the remainder of whatever chunk is in flight.
+Whatever chunks finished before the flag was noticed are kept and become a
+downloadable partial transcript, not discarded.
+
+## Language: one backend fakes it, the other doesn't
 
 Parakeet TDT has no API to force a specific source language, and this
-`transformers` port doesn't expose a detected-language field either (both
-confirmed by reading `processing_parakeet.py`/`generation_parakeet.py` in
-the installed package — there's no language token, prompt mechanism, or
+`transformers` port doesn't expose a detected-language field either
+(confirmed by reading `processing_parakeet.py`/`generation_parakeet.py` in
+the installed package -- there's no language token, prompt mechanism, or
 output field anywhere). It's a pure auto-detecting acoustic model. That's
-why there's no language picker in the UI: a dropdown that can't actually
-change the model's behavior would just be a lie dressed as a feature.
+why there's no language picker for it in the UI: a dropdown that can't
+actually change the model's behavior would just be a lie dressed as a
+feature.
+
+Qwen3-ASR is different: it's genuinely forced by prefilling the chat prompt
+with `language <NAME><asr_text>` (`processing_qwen3_asr.py`), and reports
+what it detected when you don't force one. Forcing the *wrong* language
+doesn't translate the audio -- it just biases the transcription token
+choices toward that language, which can degrade output if the audio is
+clearly in a different one.
 
 ## Known limitations / next steps
 
 - The transformers port of Parakeet TDT is pre-release; the exact shape of
-  the per-token timestamp output isn't pinned down by stable docs, so
-  `transcriber._entries_to_segments` is deliberately defensive and falls
-  back to one untimed block of text per chunk if parsing fails. If that
-  fallback is firing in practice, re-check the model card for the current
-  output format and tighten the parser.
-- No persistent job history — add a DB if you want transcripts to survive restarts.
-- Single model instance processes one job at a time (background tasks run
-  sequentially against the one loaded model); fine for personal use, not for
-  concurrent multi-user load.
-- Long files are chunked at fixed 10-minute boundaries with no overlap, so a
-  word spanning a boundary can be slightly garbled. Not addressed in v1.
+  its per-token timestamp output isn't pinned down by stable docs, so
+  `app/asr/parakeet.py`'s `_entries_to_segments` is deliberately defensive
+  and falls back to one untimed block of text per chunk if parsing fails.
+  If that fallback is firing in practice, re-check the model card for the
+  current output format and tighten the parser.
+- No persistent job history -- add a DB if you want transcripts to survive restarts.
+- One model instance per backend; each processes one job at a time
+  (background tasks run sequentially against whichever backend's already-
+  loaded model). Fine for personal use, not for concurrent multi-user load.
+  Using both backends in the same process run means both stay loaded in
+  memory afterward -- there's no unloading.
+- Long files are chunked at fixed boundaries with no overlap, so a word
+  spanning a boundary can be slightly garbled. For Qwen3-ASR's 30s chunks
+  this happens far more often than Parakeet's 10-minute ones.
+- Qwen3-ASR has no native word-level timestamps; real ones would need a
+  second model (`Qwen3-ForcedAligner-0.6B`, only 11 of its 30 languages) and
+  a second inference pass. Not implemented -- each chunk is one timestamped
+  segment instead.
 
 ## Development
 
 ```bash
 uv run ruff check .          # lint
 uv run ruff format --check . # formatting
-uv run pytest -v             # tests (loads the real model, no mocks)
+uv run pytest -v             # tests (loads the real models, no mocks)
 ```
 
-`tests/test_transcriber.py` is an end-to-end smoke test, not a unit test
-with the model mocked out: it loads the real `AutoModelForTDT`/`AutoProcessor`
-and transcribes a real speech sample (`tests/fixtures/libri_sample.wav`,
-from the public LibriSpeech dummy dataset). That's deliberate — every bug
+`tests/test_parakeet.py` and `tests/test_qwen3.py` are end-to-end smoke
+tests, not unit tests with the models mocked out: they load the real models
+and transcribe a real speech sample (`tests/fixtures/libri_sample.wav`,
+from the public LibriSpeech dummy dataset). That's deliberate -- every bug
 this project has hit so far (missing `librosa`/`accelerate`, a token-joining
-spacing bug that garbled every word) only showed up once the model actually
-loaded and ran; a mocked test would have passed right through all of them.
+spacing bug that garbled every word, a mis-nested processor kwarg) only
+showed up once a model actually loaded and ran; a mocked test would have
+passed right through all of them.
 
 CI (`.github/workflows/ci.yml`) runs both lint and the test suite on every
 push to `main` and every PR. GitHub Actions are pinned to commit SHAs, not
