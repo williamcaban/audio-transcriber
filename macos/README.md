@@ -29,7 +29,35 @@ like the browser version -- the "loading model..." banner and Model/Source
 language dropdowns all work the same, since it's the same `static/
 index.html` and `app/` code, just hosted in a window instead of a tab.
 
-## Package as a double-clickable .app (untested, try it)
+## Package as a double-clickable .app
+
+**Confirmed working** (2026-10-18): both a real local build on William's
+Mac and the `macos-build` CI job (on a real `macos-latest` runner) produce
+the `.app` successfully.
+
+### Download a pre-built copy instead of building it
+
+Every version is published to [GitHub Releases](https://github.com/williamcaban/audio-transcriber/releases):
+
+- A tagged release (`v0.1.0`, ...) for each version.
+- [`dev`](https://github.com/williamcaban/audio-transcriber/releases/tag/dev), a pre-release that's overwritten on every push to `main` -- the current state of development, not guaranteed stable.
+
+Download `Audio-Transcriber-macOS.zip` from whichever release you want, unzip it, and you have `Audio Transcriber.app`.
+
+(Every CI run also briefly keeps its own build as an Actions artifact, for
+debugging a specific run -- see `.github/workflows/ci.yml`'s `macos-build`
+job -- but Releases above are the actual place to get a copy from.)
+
+**It's unsigned**, so macOS Gatekeeper will refuse to open it normally
+("Audio Transcriber.app is damaged and can't be opened" or similar). Either
+right-click -> Open (and confirm) the first time instead of double-clicking,
+or clear the quarantine attribute a browser download adds:
+
+```bash
+xattr -cr "Audio Transcriber.app"
+```
+
+### Or build it yourself
 
 [py2app](https://py2app.readthedocs.io/) bundles a Python app into a
 standalone macOS `.app`:
