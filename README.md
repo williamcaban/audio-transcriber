@@ -51,6 +51,52 @@ Then open http://localhost:8000 (or `http://<host>:8000` if running on a
 remote GPU box) and drop in a file. The model downloads from Hugging Face on
 first startup (a few GB) and is cached by `huggingface_hub` after that.
 
+## Running on macOS
+
+Two options; native is recommended on Apple Silicon since it can use the
+GPU via Metal (MPS), which a container can't reach.
+
+### Native (recommended on Apple Silicon)
+
+```bash
+brew install uv ffmpeg
+git clone https://github.com/williamcaban/audio-transcriber.git
+cd audio-transcriber
+uv sync
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+`app/transcriber.py` auto-detects: CUDA, then Apple's MPS backend, then
+CPU. Parakeet TDT's `transformers` port is very new, so MPS op coverage
+isn't guaranteed — if `model.generate()` errors on an unsupported op, force
+CPU by editing `_detect_device()` to always return `"cpu"` (slower, but
+guaranteed to work), or set `PYTORCH_ENABLE_MPS_FALLBACK=1` to let
+unsupported ops silently fall back to CPU per-op.
+
+### Container (Podman Desktop)
+
+Podman on macOS runs containers inside a Linux VM, which has no access to
+the host's GPU/Metal — this path is CPU-only regardless of your Mac's
+hardware, so expect it to be noticeably slower than native.
+
+```bash
+brew install podman
+podman machine init
+podman machine start
+
+# the image is currently private — log in first
+echo "<a GitHub token with read:packages>" | podman login ghcr.io -u <your-github-username> --password-stdin
+
+podman pull ghcr.io/williamcaban/audio-transcriber:latest
+podman run --rm -p 8080:8080 \
+  -v audio-transcriber-model-cache:/opt/app-root/src/.cache/huggingface \
+  ghcr.io/williamcaban/audio-transcriber:latest
+```
+
+Then open http://localhost:8080 either way the image is pulled. See
+[Running in a container](#running-in-a-container) below for more on the
+model-cache volume and what the image contains.
+
 ## Running in a container
 
 `Containerfile` builds on Fedora's official Python 3.14 application image
