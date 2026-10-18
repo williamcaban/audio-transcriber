@@ -7,6 +7,7 @@ Produces dist/Audio Transcriber.app.
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,17 +31,32 @@ sys.setrecursionlimit(10000)
 # while building the executable, assuming zlib is always a separate loadable
 # extension file. uv-managed Python builds (python-build-standalone)
 # statically link zlib into the interpreter for portability, so it has no
-# __file__ -- point it at the system's real zlib shared library instead
-# (harmless: that's the same code, just not compiled into this interpreter
-# as a standalone file) so py2app has something to copy.
+# __file__ to begin with.
+#
+# Pointing zlib.__file__ at the "system" path (e.g. via
+# ctypes.util.find_library("z") -> /usr/lib/libz.dylib) isn't enough on
+# real macOS (Big Sur+): system libraries no longer exist as real files on
+# disk at all, only inside the dyld shared cache (at most the SDK ships a
+# text-based .tbd *link-time* stub, which isn't a copyable file either) --
+# py2app's copy then fails with a plain FileNotFoundError. Confirmed:
+# this is why the CI macos-latest runner's build succeeded (its image still
+# has that path as a real file) while a real, current macOS machine's did
+# not.
+#
+# Fix: compile a tiny real dylib that links against system libz -- the
+# compiler resolves `-lz` fine via the SDK's .tbd stub, and the result is a
+# genuine on-disk Mach-O file py2app CAN copy. Its contents don't matter at
+# runtime: this interpreter's zlib support is already statically linked in,
+# so this bundled copy is never actually loaded.
 import zlib
 
 if not hasattr(zlib, "__file__"):
-    import ctypes.util
-
-    _libz = ctypes.util.find_library("z")
-    if _libz:
-        zlib.__file__ = _libz
+    _stub_dir = Path(__file__).resolve().parent / "build"
+    _stub_dir.mkdir(parents=True, exist_ok=True)
+    _stub_path = _stub_dir / "libz_stub.dylib"
+    if not _stub_path.exists():
+        subprocess.run(["cc", "-dynamiclib", "-lz", "-o", str(_stub_path)], check=True)
+    zlib.__file__ = str(_stub_path)
 
 # py2app resolves `app=[...]` and writes build/dist output relative to the
 # current working directory, not this script's own directory -- chdir here
