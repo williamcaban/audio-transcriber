@@ -66,7 +66,21 @@ if not hasattr(zlib, "__file__"):
 os.chdir(Path(__file__).resolve().parent)
 
 APP = ["desktop_app.py"]
-DATA_FILES = [("static", [str(p) for p in (REPO_ROOT / "static").iterdir()])]
+
+# app/main.py locates its static/ directory as
+# `Path(__file__).resolve().parent.parent / "static"`, which in the bundle
+# resolves to Contents/Resources/lib/python3.X/static (app/main.py itself
+# lands at .../lib/python3.X/app/main.py, same layout as a normal site-
+# packages install). py2app's default data_files destination of bare
+# "static" instead lands one level too shallow, at Contents/Resources/
+# static -- confirmed via a real launch attempt failing with "Directory
+# .../lib/python3.13/static does not exist". Target the same lib/python3.X
+# path app/main.py actually looks in, rather than special-casing main.py's
+# path logic for this one packaging format.
+_py_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+DATA_FILES = [
+    (f"lib/{_py_dir}/static", [str(p) for p in (REPO_ROOT / "static").iterdir()])
+]
 OPTIONS = {
     "argv_emulation": False,
     # By default py2app zip-compresses pure-Python packages into
