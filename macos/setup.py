@@ -75,15 +75,27 @@ OPTIONS = {
     # path at runtime (rather than importing it as a normal compiled Python
     # extension module, which py2app's dependency scanner does handle
     # correctly) -- the dynamic linker can't load a library from inside a
-    # zip archive. Confirmed for `soundfile` via a real build+run attempt
-    # (OSError loading its bundled libsndfile_arm64.dylib). `torch` and
-    # `numpy` are added preemptively, not reactively: both are well-known
-    # to hit this exact failure mode in py2app/PyInstaller builds for the
-    # same reason (bundled native libraries loaded via relative paths), so
-    # it's worth fixing before the next build attempt rather than making
-    # William iterate through each one individually. If another package
-    # hits the same `OSError: cannot load library` pattern, add it here too.
-    "packages": ["app", "soundfile", "torch", "numpy"],
+    # zip archive.
+    #
+    # `soundfile` itself is a flat top-level module (soundfile.py), not a
+    # directory package, so listing it here does nothing -- py2app's
+    # "packages" mechanism only un-zips directory-style packages. The actual
+    # bundled dylib lookup goes through a *separate* package, `_soundfile_
+    # data` (soundfile.py does `import _soundfile_data; dirname(_soundfile_
+    # data.__file__)`), confirmed via a real build+run attempt (OSError
+    # loading its bundled libsndfile_arm64.dylib from inside python313.zip
+    # even with `soundfile` listed here). `_soundfile_data` is what needs to
+    # stay unzipped. `torch` and `numpy` are added preemptively, not
+    # reactively: both are well-known to hit this exact failure mode in
+    # py2app/PyInstaller builds for the same reason (bundled native
+    # libraries loaded via relative paths, and both ARE real directory
+    # packages so this option actually applies to them), so it's worth
+    # fixing before the next build attempt rather than making William
+    # iterate through each one individually. If another package hits the
+    # same `OSError: cannot load library` pattern, add it here too (check
+    # first whether it's a directory package -- if it's a flat module like
+    # soundfile.py, find the actual package holding the bundled data).
+    "packages": ["app", "_soundfile_data", "torch", "numpy"],
     "includes": ["uvicorn", "webview"],
     "plist": {
         "CFBundleName": "Audio Transcriber",
